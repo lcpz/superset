@@ -886,7 +886,7 @@ def load_snapshot(database_url: str, snapshot: Snapshot, source: str) -> None:
                 rem = remediation(pr)
                 cur.execute(
                     """INSERT INTO devin_obs.pull_requests VALUES
-                       (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (number) DO UPDATE SET
                          title=EXCLUDED.title, state=EXCLUDED.state,
                          draft=EXCLUDED.draft,
