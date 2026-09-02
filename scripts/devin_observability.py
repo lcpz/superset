@@ -723,6 +723,7 @@ def dispatch(
             "kind": finding.kind,
             "pr": finding.pr_number,
         }
+        dispatched_prs.add(finding.pr_number)
         if dry_run:
             record["status"] = "dry-run"
         else:
@@ -733,7 +734,6 @@ def dispatch(
                 "Devin observability: "
                 f"`{finding.kind}` detected; a session is being started.",
             )
-            dispatched_prs.add(finding.pr_number)
             try:
                 session = devin.create_session(
                     prompt=dispatch_prompt(finding, gh.repo, by_pr[finding.pr_number]),
@@ -770,7 +770,6 @@ def dispatch(
                 f"Devin observability: `{finding.kind}` detected ({finding.detail}); "
                 f"started a session to address it: {record['session_url']}",
             )
-            dispatched_prs.add(finding.pr_number)
         results.append(record)
     return results
 
