@@ -152,11 +152,44 @@ class VersionListItemSchema(Schema):
     )
 
 
+class RetentionDisclosureSchema(Schema):
+    """Retention/pruning disclosure attached to history responses.
+
+    Absence of a record older than ``history_begins_at`` is NOT evidence
+    that it never existed: the ``version_history.prune_old_versions`` task
+    may already have dropped it.
+    """
+
+    version_history_days = fields.Integer(
+        allow_none=True,
+        metadata={
+            "description": (
+                "Retention window in days (SUPERSET_VERSION_HISTORY_RETENTION_DAYS). "
+                "Null when pruning is disabled."
+            )
+        },
+    )
+    pruning_enabled = fields.Boolean(
+        metadata={"description": "Whether scheduled retention pruning is active."},
+    )
+    history_begins_at = fields.String(
+        allow_none=True,
+        metadata={
+            "description": (
+                "ISO-8601 UTC instant of the current prune cutoff. Version and "
+                "activity records issued before it may have been pruned. Null "
+                "when pruning is disabled."
+            )
+        },
+    )
+
+
 class VersionListResponseSchema(Schema):
     """Envelope for version list responses."""
 
     result = fields.List(fields.Nested(VersionListItemSchema))
     count = fields.Integer()
+    retention = fields.Nested(RetentionDisclosureSchema)
 
 
 # ---- Cross-entity activity view ------------------------------------------
@@ -481,3 +514,4 @@ class ActivityResponseSchema(Schema):
             )
         },
     )
+    retention = fields.Nested(RetentionDisclosureSchema)

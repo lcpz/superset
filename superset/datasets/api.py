@@ -72,6 +72,7 @@ from superset.datasets.filters import (
     DatasetEditableFilter,
     DatasetIsNullOrEmptyFilter,
 )
+from superset.datasets.related_objects import get_dataset_related_objects
 from superset.datasets.schemas import (
     DatasetCacheWarmUpRequestSchema,
     DatasetCacheWarmUpResponseSchema,
@@ -105,6 +106,7 @@ from superset.versioning.api_helpers import (
     lock_entity_for_update,
     restore_version_endpoint,
 )
+from superset.versioning.disclosure import parse_page_params
 from superset.versioning.etag import (
     is_conditional_write,
     raise_for_stale_write,
@@ -1119,23 +1121,38 @@ class DatasetRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
         log_to_statsd=False,
     )
     def related_objects(self, id_or_uuid: str) -> Response:
-        """Get charts and dashboards count associated to a dataset.
+        """Get charts and dashboards associated to a dataset.
         ---
         get:
-          summary: Get charts and dashboards count associated to a dataset
+          summary: Get charts and dashboards associated to a dataset
+          description: >-
+            Lists TABLE-backed charts reading from the dataset and the
+            dashboards containing them. Without ``page_size`` the full lists
+            are returned; with ``page_size`` each list is paginated and
+            ``truncated`` discloses whether more pages exist. ``count`` is
+            always the total the requester may see.
           parameters:
           - in: path
             name: id_or_uuid
             schema:
               type: string
+          - in: query
+            name: page
+            schema:
+              type: integer
+          - in: query
+            name: page_size
+            schema:
+              type: integer
           responses:
-            200:
             200:
               description: Query result
               content:
                 application/json:
                   schema:
                     $ref: "#/components/schemas/DatasetRelatedObjectsResponse"
+            400:
+              $ref: '#/components/responses/400'
             401:
               $ref: '#/components/responses/401'
             404:
@@ -1146,31 +1163,12 @@ class DatasetRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
         dataset = DatasetDAO.find_by_id_or_uuid(id_or_uuid)
         if not dataset:
             return self.response_404()
-        data = DatasetDAO.get_related_objects(dataset.id)
-        charts = [
-            {
-                "id": chart.id,
-                "slice_name": chart.slice_name,
-                "viz_type": chart.viz_type,
-            }
-            for chart in data["charts"]
-            if security_manager.can_access_chart(chart)
-        ]
-        dashboards = [
-            {
-                "id": dashboard.id,
-                "json_metadata": dashboard.json_metadata,
-                "slug": dashboard.slug,
-                "title": dashboard.dashboard_title,
-            }
-            for dashboard in data["dashboards"]
-            if security_manager.can_access_dashboard(dashboard)
-        ]
-        return self.response(
-            200,
-            charts={"count": len(charts), "result": charts},
-            dashboards={"count": len(dashboards), "result": dashboards},
-        )
+        try:
+            page, page_size = parse_page_params(request.args)
+        except ValueError as ex:
+            return self.response_400(message=str(ex))
+        data = get_dataset_related_objects(dataset, page=page, page_size=page_size)
+        return self.response(200, **data)
 
     @expose("/", methods=("DELETE",))
     @protect()

@@ -227,26 +227,41 @@ class DatasetDuplicateSchema(Schema):
 
 class DatasetRelatedChart(Schema):
     id = fields.Integer()
+    uuid = fields.String(allow_none=True)
     slice_name = fields.String()
     viz_type = fields.String()
 
 
 class DatasetRelatedDashboard(Schema):
     id = fields.Integer()
+    uuid = fields.String(allow_none=True)
     json_metadata = fields.Dict()
     slug = fields.String()
     title = fields.String()
 
 
-class DatasetRelatedCharts(Schema):
+class _RelatedDisclosureMixin(Schema):
+    truncated = fields.Boolean(
+        metadata={
+            "description": (
+                "True when more objects exist beyond this page; count is the "
+                "total the requester may see"
+            )
+        }
+    )
+    page = fields.Integer(metadata={"description": "0-based page returned"})
+    page_size = fields.Integer(metadata={"description": "Effective page size"})
+
+
+class DatasetRelatedCharts(_RelatedDisclosureMixin):
     count = fields.Integer(metadata={"description": "Chart count"})
     result = fields.List(
         fields.Nested(DatasetRelatedChart),
-        metadata={"description": "A list of dashboards"},
+        metadata={"description": "A list of charts"},
     )
 
 
-class DatasetRelatedDashboards(Schema):
+class DatasetRelatedDashboards(_RelatedDisclosureMixin):
     count = fields.Integer(metadata={"description": "Dashboard count"})
     result = fields.List(
         fields.Nested(DatasetRelatedDashboard),

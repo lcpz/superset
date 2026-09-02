@@ -142,13 +142,25 @@ class DatasetDAO(BaseDAO[SqlaTable]):
             return None
 
     @staticmethod
-    def get_related_objects(database_id: int) -> dict[str, Any]:
+    def get_related_objects(dataset_id: int) -> dict[str, Any]:
+        """Return the charts and dashboards that depend on a dataset.
+
+        *dataset_id* is the ``SqlaTable.id`` (historically the parameter was
+        named ``database_id`` although it always received the dataset id).
+        Scope is TABLE-backed charts only (``Slice.datasource_type == TABLE``);
+        dashboards are those containing at least one of these charts. Both
+        lists are unbounded and unfiltered for access — callers apply
+        ``can_access_chart`` / ``can_access_dashboard`` and pagination.
+        Soft-deleted rows are excluded only when the ``SOFT_DELETE`` feature
+        flag is on (via the global ORM listener).
+        """
         charts = (
             db.session.query(Slice)
             .filter(
-                Slice.datasource_id == database_id,
+                Slice.datasource_id == dataset_id,
                 Slice.datasource_type == DatasourceType.TABLE,
             )
+            .order_by(Slice.id)
             .all()
         )
         chart_ids = [chart.id for chart in charts]
@@ -160,6 +172,7 @@ class DatasetDAO(BaseDAO[SqlaTable]):
                 .filter(Slice.id.in_(chart_ids))
             )
             .distinct()
+            .order_by(Dashboard.id)
             .all()
         )
         return {"charts": charts, "dashboards": dashboards}

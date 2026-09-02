@@ -45,6 +45,7 @@ from flask_appbuilder import Model
 from superset.daos.version import VersionDAO
 from superset.exceptions import SupersetSecurityException
 from superset.extensions import db, security_manager
+from superset.versioning.disclosure import retention_disclosure
 from superset.versioning.etag import set_version_etag_by_uuid
 from superset.versioning.schemas import VersionListItemSchema
 
@@ -317,7 +318,9 @@ def list_versions_endpoint(
         return api.response_404()
     result = _version_item_schema.dump(versions, many=True)
     return set_version_etag_by_uuid(
-        api.response(200, result=result, count=len(result)),
+        api.response(
+            200, result=result, count=len(result), retention=retention_disclosure()
+        ),
         model_cls,
         entity_uuid,
         entity_id=entity.id,
