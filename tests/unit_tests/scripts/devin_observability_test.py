@@ -54,6 +54,7 @@ def _pr(**overrides: Any) -> Any:
         "merged_at": None,
         "head_sha": "abc123",
         "last_commit_at": obs._iso(NOW - timedelta(hours=5)),
+        "failed_at": None,
         "checks": "success",
         "failed_checks": [],
         "approved": False,
@@ -164,6 +165,51 @@ def test_review_findings_require_no_follow_up_commit() -> None:
     assert obs.derive_findings(_snapshot([closed]), NOW) == []
 
 
+def test_failed_check_age_not_commit_age() -> None:
+    recent_failure = _pr(
+        checks="failure",
+        failed_checks=["python-lint"],
+        failed_at=obs._iso(NOW - timedelta(minutes=10)),
+    )
+    assert obs.derive_findings(_snapshot([recent_failure]), NOW) == []
+
+    old_failure = _pr(
+        checks="failure",
+        failed_checks=["python-lint"],
+        failed_at=obs._iso(NOW - timedelta(hours=5)),
+    )
+    assert [f.kind for f in obs.derive_findings(_snapshot([old_failure]), NOW)] == [
+        "ci-failed-unattended"
+    ]
+
+
+def test_session_state_controls_suppression() -> None:
+    pr = _pr(checks="failure")
+    for status, expected in [
+        ("working", []),
+        ("failed", ["ci-failed-unattended"]),
+        ("finished", []),
+    ]:
+        session = obs.SessionRow(
+            session_id="s1",
+            title="Fix CI on PR #42",
+            status=status,
+            status_detail=None,
+            origin="automation",
+            automation_id="auto-1",
+            created_at=obs._iso(NOW),
+            updated_at=obs._iso(NOW),
+            acus_consumed=1.0,
+            url="https://app.devin.ai/sessions/s1",
+            tags=[],
+            pr_numbers=[42],
+            category="fix",
+        )
+        assert [
+            f.kind for f in obs.derive_findings(_snapshot([pr], [session]), NOW)
+        ] == expected
+
+
 def test_remediation_classification() -> None:
     assert obs.remediation(_pr(state="merged")) == "merged"
     assert obs.remediation(_pr(state="closed")) == "closed"
@@ -191,7 +237,9 @@ def test_dispatch_creates_session_and_idempotency_marker(
                 "session_id": "devin-xyz",
                 "url": "https://app.devin.ai/sessions/xyz",
             }
-        return {"html_url": "https://github.com/c/1"}
+        if method == "PATCH":
+            return {"html_url": "https://github.com/c/1"}
+        return {"id": 1, "html_url": "https://github.com/c/1"}
 
     monkeypatch.setattr(obs, "_request", fake_request)
     monkeypatch.setenv("DEVIN_CREATE_AS_USER_ID", "user-1")
@@ -214,14 +262,14 @@ def test_dispatch_creates_session_and_idempotency_marker(
 
     assert [r["status"] for r in results] == ["dispatched"]
     assert results[0]["session_id"] == "devin-xyz"
-    method, url, body = calls[0]
+    method, url, body = calls[1]
     assert (method, url) == ("POST", f"{obs.DEVIN_API}/v3/organizations/org-1/sessions")
     assert body is not None
     assert body["max_acu_limit"] == 10
     assert body["create_as_user_id"] == "user-1"
     assert obs.DISPATCH_TAG in body["tags"]
     assert "NEVER merge" in body["prompt"]
-    comment_method, comment_url, comment_body = calls[1]
+    comment_method, comment_url, comment_body = calls[0]
     assert (comment_method, comment_url) == (
         "POST",
         f"{obs.GITHUB_API}/repos/lcpz/superset/issues/42/comments",
@@ -229,6 +277,7 @@ def test_dispatch_creates_session_and_idempotency_marker(
     assert comment_body is not None
     assert f"<!-- {obs.DISPATCH_MARKER}" in comment_body["body"]
     assert obs._dispatch_markers([comment_body])[0]["key"] == finding.key
+    assert calls[2][0] == "PATCH"
 
 
 def test_dry_run_and_disabled_client_never_call_the_api(
@@ -249,3 +298,124 @@ def test_dry_run_and_disabled_client_never_call_the_api(
     assert disabled.automations() == []
     with pytest.raises(RuntimeError, match="not configured"):
         disabled.create_session("p", "t", [], 1)
+
+
+def test_deleted_review_author_is_counted_as_human(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeGitHub:
+        def check_runs(self, sha: str) -> list[dict[str, Any]]:
+            return []
+
+        def reviews(self, number: int) -> list[dict[str, Any]]:
+            return []
+
+        def review_threads(self, number: int) -> list[dict[str, Any]]:
+            return [
+                {
+                    "isResolved": False,
+                    "isOutdated": False,
+                    "comments": {"nodes": [{"author": None, "createdAt": "t"}]},
+                }
+            ]
+
+        def commits(self, number: int) -> list[dict[str, Any]]:
+            return []
+
+        def issue_comments(self, number: int) -> list[dict[str, Any]]:
+            return []
+
+    row, _ = obs.collect_pull(
+        FakeGitHub(),
+        {
+            "number": 42,
+            "title": "feat",
+            "html_url": "https://github.com/lcpz/superset/pull/42",
+            "user": {"login": "human"},
+            "head": {"ref": "devin/42-feat", "sha": "abc"},
+            "state": "open",
+            "draft": False,
+            "created_at": "2026-09-01T00:00:00+00:00",
+            "updated_at": "2026-09-01T00:00:00+00:00",
+            "merged_at": None,
+        },
+    )
+    assert row.unresolved_threads == 1
+
+
+def test_dispatch_failed_session_clears_marker_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        calls.append((method, url, body))
+        if method == "POST" and url.endswith("/comments"):
+            return {"id": 1}
+        if method == "PATCH":
+            return {}
+        raise RuntimeError("create failed")
+
+    monkeypatch.setattr(obs, "_request", fake_request)
+    gh = obs.GitHubClient("t", "lcpz/superset")
+    devin = obs.DevinClient("key", "org-1")
+    finding = obs.Finding("k", "ci-failed-unattended", 1, "u", "devin/1", "d", None)
+    results = obs.dispatch(gh, devin, [finding], dry_run=False, limit=1, max_acu=5)
+    assert results[0]["status"] == "error"
+    assert [call[0] for call in calls] == ["POST", "POST", "PATCH"]
+    assert obs.DISPATCH_MARKER not in (calls[2][2] or {}).get("body", "")
+
+
+def test_one_session_per_pr_includes_all_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        calls.append((method, url, body))
+        if method == "POST" and url.endswith("/sessions"):
+            return {"session_id": "s1", "url": "https://app.devin.ai/sessions/s1"}
+        if method == "POST":
+            return {"id": 7}
+        return {}
+
+    monkeypatch.setattr(obs, "_request", fake_request)
+    gh = obs.GitHubClient("t", "lcpz/superset")
+    devin = obs.DevinClient("key", "org-1")
+    findings = [
+        obs.Finding(
+            "review",
+            "review-unaddressed",
+            42,
+            "u",
+            "devin/42",
+            "unresolved threads",
+            None,
+        ),
+        obs.Finding(
+            "changes",
+            "changes-requested-unaddressed",
+            42,
+            "u",
+            "devin/42",
+            "changes requested",
+            None,
+        ),
+    ]
+    results = obs.dispatch(gh, devin, findings, dry_run=False, limit=3, max_acu=5)
+    assert len(results) == 1
+    assert results[0]["status"] == "dispatched"
+    session_body = calls[1][2]
+    assert session_body is not None
+    assert "review-unaddressed" in session_body["prompt"]
+    assert "changes-requested-unaddressed" in session_body["prompt"]

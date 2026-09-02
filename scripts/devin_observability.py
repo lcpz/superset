@@ -82,6 +82,8 @@ IGNORED_CHECKS = set(
     )
 )
 LOOKBACK = timedelta(days=int(os.environ.get("DEVIN_OBS_LOOKBACK_DAYS", "60")))
+ACTIVE_SESSION_STATES = {"new", "claimed", "running", "resuming", "working"}
+FAILED_SESSION_STATES = {"expired", "failed", "cancelled"}
 
 JsonDict = dict[str, Any]
 
@@ -216,6 +218,15 @@ class GitHubClient:
         )
         return result
 
+    def update_comment(self, comment_id: int, body: str) -> JsonDict:
+        result: JsonDict = _request(
+            "PATCH",
+            f"{GITHUB_API}/repos/{self.repo}/issues/comments/{comment_id}",
+            self.headers,
+            {"body": body},
+        )
+        return result
+
 
 class DevinClient:
     def __init__(self, api_key: str, org_id: str) -> None:
@@ -299,6 +310,7 @@ class PullRow:
     merged_at: str | None
     head_sha: str
     last_commit_at: str | None
+    failed_at: str | None
     checks: str  # success | failure | pending | none
     failed_checks: list[str]
     approved: bool
@@ -439,7 +451,7 @@ def collect_pull(gh: GitHubClient, pull: JsonDict) -> tuple[PullRow, list[CheckR
         for t in threads
         if not t["isResolved"]
         and not t["isOutdated"]
-        and (t["comments"]["nodes"] or [{}])[0].get("author", {}).get("login")
+        and ((t["comments"]["nodes"] or [{}])[0].get("author") or {}).get("login")
         not in BOT_LOGINS
     ]
     oldest = min(
@@ -454,6 +466,14 @@ def collect_pull(gh: GitHubClient, pull: JsonDict) -> tuple[PullRow, list[CheckR
     last_commit_at = max(
         (c["commit"]["committer"]["date"] for c in commits), default=None
     )
+    failed_at_values = [
+        completed_at
+        for r in runs
+        if r.get("status") == "completed"
+        and r.get("name") not in IGNORED_CHECKS
+        and r.get("conclusion") not in {"success", "skipped", "neutral"}
+        and isinstance(completed_at := r.get("completed_at"), str)
+    ]
     row = PullRow(
         number=number,
         title=pull["title"],
@@ -467,6 +487,7 @@ def collect_pull(gh: GitHubClient, pull: JsonDict) -> tuple[PullRow, list[CheckR
         merged_at=pull.get("merged_at"),
         head_sha=sha,
         last_commit_at=last_commit_at,
+        failed_at=max(failed_at_values, default=None),
         checks=checks,
         failed_checks=failed,
         approved="APPROVED" in states and "CHANGES_REQUESTED" not in states,
@@ -559,9 +580,10 @@ def _session_active_since(
     for s in sessions:
         if pr.number in s.pr_numbers or f"#{pr.number}" in (s.title or ""):
             updated = _parse_ts(s.updated_at)
-            if s.status in {"running", "claimed", "new", "resuming"}:
+            status = (s.status or "").lower()
+            if status in ACTIVE_SESSION_STATES:
                 return True
-            if updated and updated >= since:
+            if updated and updated >= since and status not in FAILED_SESSION_STATES:
                 return True
     return False
 
@@ -597,14 +619,16 @@ def derive_findings(snapshot: Snapshot, now: datetime) -> list[Finding]:
         add = functools.partial(_add_finding, findings, pr)
         last_commit = _parse_ts(pr.last_commit_at) or _parse_ts(pr.created_at) or now
         quiet_since = now - UNATTENDED_GRACE
+        failed_at = _parse_ts(pr.failed_at)
+        ci_since = max(last_commit, failed_at) if failed_at else last_commit
 
-        if pr.checks == "failure" and last_commit <= quiet_since:
-            if not _session_active_since(snapshot.sessions, pr, last_commit):
+        if pr.checks == "failure" and ci_since <= quiet_since:
+            if not _session_active_since(snapshot.sessions, pr, ci_since):
                 add(
                     "ci-failed-unattended",
                     pr.head_sha,
                     f"failed checks: {', '.join(pr.failed_checks[:5])}",
-                    pr.last_commit_at,
+                    pr.failed_at or pr.last_commit_at,
                 )
         oldest = _parse_ts(pr.oldest_unresolved_at)
         if (
@@ -640,12 +664,18 @@ def derive_findings(snapshot: Snapshot, now: datetime) -> list[Finding]:
 # --------------------------------------------------------------------------- #
 # Dispatch
 # --------------------------------------------------------------------------- #
-def dispatch_prompt(finding: Finding, repo: str) -> str:
+def dispatch_prompt(
+    finding: Finding, repo: str, related: list[Finding] | None = None
+) -> str:
+    signals = related or [finding]
+    signal_text = "\n".join(
+        f"- {item.kind}: {item.detail} (since {item.since})" for item in signals
+    )
     return (
         f"You were started by the periodic Devin observability job for @{repo} "
         f"(finding `{finding.key}`, kind `{finding.kind}`).\n\n"
         f"Pull request: {finding.pr_url} (branch `{finding.branch}`).\n"
-        f"Signal: {finding.detail} (since {finding.since}).\n\n"
+        f"Signals detected for this PR:\n{signal_text}\n\n"
         "Tasks:\n"
         "1. Re-check the PR's CURRENT state first; stop with a short PR comment if the "
         "signal is already resolved, the PR is merged/closed, or another Devin session "
@@ -672,7 +702,22 @@ def dispatch(
     max_acu: int,
 ) -> list[JsonDict]:
     results: list[JsonDict] = []
-    for finding in [f for f in findings if not f.dispatched][:limit]:
+    priority = {
+        "ci-failed-unattended": 0,
+        "changes-requested-unaddressed": 1,
+        "review-unaddressed": 2,
+    }
+    by_pr: dict[int, list[Finding]] = {}
+    for finding in findings:
+        by_pr.setdefault(finding.pr_number, []).append(finding)
+    ordered = sorted(
+        (f for f in findings if not f.dispatched),
+        key=lambda f: (priority.get(f.kind, len(priority)), f.pr_number),
+    )
+    dispatched_prs: set[int] = set()
+    for finding in ordered:
+        if len(dispatched_prs) >= limit or finding.pr_number in dispatched_prs:
+            continue
         record: JsonDict = {
             "key": finding.key,
             "kind": finding.kind,
@@ -681,16 +726,34 @@ def dispatch(
         if dry_run:
             record["status"] = "dry-run"
         else:
-            session = devin.create_session(
-                prompt=dispatch_prompt(finding, gh.repo),
-                title=f"[obs] {finding.kind} on PR #{finding.pr_number}",
-                tags=[
-                    DISPATCH_TAG,
-                    f"finding:{finding.kind}",
-                    f"pr:{finding.pr_number}",
-                ],
-                max_acu=max_acu,
+            marker = json.dumps({"key": finding.key, "kind": finding.kind})
+            comment = gh.comment(
+                finding.pr_number,
+                f"<!-- {DISPATCH_MARKER} {marker} -->\n"
+                "Devin observability: "
+                f"`{finding.kind}` detected; a session is being started.",
             )
+            dispatched_prs.add(finding.pr_number)
+            try:
+                session = devin.create_session(
+                    prompt=dispatch_prompt(finding, gh.repo, by_pr[finding.pr_number]),
+                    title=f"[obs] {finding.kind} on PR #{finding.pr_number}",
+                    tags=[
+                        DISPATCH_TAG,
+                        f"finding:{finding.kind}",
+                        f"pr:{finding.pr_number}",
+                    ],
+                    max_acu=max_acu,
+                )
+            except Exception as exc:
+                gh.update_comment(
+                    int(comment["id"]),
+                    "Devin observability: "
+                    f"dispatch failed ({exc}); the next run will retry.",
+                )
+                record.update({"status": "error", "error": str(exc)})
+                results.append(record)
+                continue
             record.update(
                 {
                     "status": "dispatched",
@@ -701,12 +764,13 @@ def dispatch(
             marker = json.dumps(
                 {k: record[k] for k in ("key", "kind", "session_id", "session_url")}
             )
-            gh.comment(
-                finding.pr_number,
+            gh.update_comment(
+                int(comment["id"]),
                 f"<!-- {DISPATCH_MARKER} {marker} -->\n"
                 f"Devin observability: `{finding.kind}` detected ({finding.detail}); "
                 f"started a session to address it: {record['session_url']}",
             )
+            dispatched_prs.add(finding.pr_number)
         results.append(record)
     return results
 
@@ -733,7 +797,8 @@ CREATE TABLE IF NOT EXISTS devin_obs.pull_requests (
   number INT PRIMARY KEY, title TEXT, url TEXT, author TEXT, branch TEXT,
   state TEXT, draft BOOLEAN, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ,
   merged_at TIMESTAMPTZ, head_sha TEXT, last_commit_at TIMESTAMPTZ,
-  checks TEXT, failed_checks TEXT[], approved BOOLEAN, changes_requested BOOLEAN,
+  failed_at TIMESTAMPTZ, checks TEXT, failed_checks TEXT[],
+  approved BOOLEAN, changes_requested BOOLEAN,
   last_human_review_at TIMESTAMPTZ, review_threads INT, unresolved_threads INT,
   oldest_unresolved_at TIMESTAMPTZ, remediation TEXT, last_seen_at TIMESTAMPTZ
 );
@@ -828,6 +893,7 @@ def load_snapshot(database_url: str, snapshot: Snapshot, source: str) -> None:
                          updated_at=EXCLUDED.updated_at, merged_at=EXCLUDED.merged_at,
                          head_sha=EXCLUDED.head_sha,
                          last_commit_at=EXCLUDED.last_commit_at,
+                         failed_at=EXCLUDED.failed_at,
                          checks=EXCLUDED.checks, failed_checks=EXCLUDED.failed_checks,
                          approved=EXCLUDED.approved,
                          changes_requested=EXCLUDED.changes_requested,
@@ -850,6 +916,7 @@ def load_snapshot(database_url: str, snapshot: Snapshot, source: str) -> None:
                         pr.merged_at,
                         pr.head_sha,
                         pr.last_commit_at,
+                        pr.failed_at,
                         pr.checks,
                         pr.failed_checks,
                         pr.approved,
