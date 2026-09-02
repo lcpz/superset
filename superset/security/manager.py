@@ -1706,7 +1706,12 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
     """Set to False in subclasses that provide their own auth view."""
     register_superset_registeruser_view = True
     """Set to False in subclasses that provide their own register user view."""
-    READ_ONLY_MODEL_VIEWS = {"Database", "DynamicPlugin"}
+    READ_ONLY_MODEL_VIEWS = {
+        "Database",
+        "DynamicPlugin",
+        "SemanticLayer",
+        "SemanticView",
+    }
 
     role_api = SupersetRoleApi
     user_api = SupersetUserApi
@@ -1728,8 +1733,6 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         "CssTemplate",
         "Dataset",
         "Datasource",
-        "SemanticLayer",
-        "SemanticView",
         "Theme",
     } | READ_ONLY_MODEL_VIEWS
 

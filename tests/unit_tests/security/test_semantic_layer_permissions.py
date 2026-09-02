@@ -30,15 +30,14 @@ def _pvm(permission: str, view_menu: str) -> MagicMock:
 
 
 @pytest.mark.parametrize("view_menu", ["SemanticLayer", "SemanticView"])
-def test_semantic_layer_write_is_not_gamma(app_context: None, view_menu: str) -> None:
-    """Registering data connections is not a Gamma capability."""
+def test_semantic_layer_write_is_admin_only(app_context: None, view_menu: str) -> None:
+    """Managing data connections is reserved for Admin."""
     from superset.extensions import appbuilder
 
     sm = SupersetSecurityManager(appbuilder)
 
     assert sm._is_gamma_pvm(_pvm("can_write", view_menu)) is False
-    assert sm._is_alpha_only(_pvm("can_write", view_menu)) is True
-    assert sm._is_admin_only(_pvm("can_write", view_menu)) is False
+    assert sm._is_admin_only(_pvm("can_write", view_menu)) is True
 
 
 @pytest.mark.parametrize("view_menu", ["SemanticLayer", "SemanticView"])
