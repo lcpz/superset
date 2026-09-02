@@ -433,6 +433,47 @@ def test_update_virtual_dataset_unchanged_source_skips_sql_access(
     mock_dataset_dao.update.assert_called_once()
 
 
+def test_update_virtual_dataset_rename_skips_sql_access(
+    mocker: MockerFixture,
+) -> None:
+    """
+    Renaming a virtual dataset (``table_name`` is only its display identity)
+    does not change what its SQL resolves against, so no SQL access check
+    is re-run.
+    """
+    mock_dataset_dao = mocker.patch("superset.commands.dataset.update.DatasetDAO")
+    mocker.patch(
+        "superset.commands.dataset.update.security_manager.raise_for_editorship",
+    )
+    mocker.patch("superset.commands.utils.security_manager.is_admin", return_value=True)
+
+    mock_database = mocker.MagicMock()
+    mock_database.id = 1
+    mock_database.get_default_catalog.return_value = "catalog"
+    mock_database.allow_multi_catalog = False
+
+    mock_dataset = mocker.MagicMock()
+    mock_dataset.database = mock_database
+    mock_dataset.catalog = "catalog"
+    mock_dataset.schema = "allowed_schema"
+    mock_dataset.table_name = "virtual_ds"
+    mock_dataset.sql = "SELECT * FROM t"
+    mock_dataset.editors = []
+
+    mock_dataset_dao.find_by_id.return_value = mock_dataset
+    mock_dataset_dao.validate_update_uniqueness.return_value = True
+    mock_dataset_dao.update.return_value = mock_dataset
+
+    raise_for_access = mocker.patch(
+        "superset.commands.dataset.update.security_manager.raise_for_access",
+    )
+
+    UpdateDatasetCommand(1, {"table_name": "renamed_ds"}).run()
+
+    raise_for_access.assert_not_called()
+    mock_dataset_dao.update.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("payload, exception, error_msg"),
     [
