@@ -36,7 +36,7 @@ Environment:
 Usage:
     python scripts/devin_report.py [--output report.md] [--json state.json]
 
-See docs/devin-observability.md for status definitions.
+See .github/devin-observability.md for status definitions.
 """
 
 from __future__ import annotations
@@ -414,7 +414,7 @@ def render(
         )
     lines += [
         "",
-        "Status definitions and replay procedure: `docs/devin-observability.md`.",
+        "Status definitions and replay procedure: `.github/devin-observability.md`.",
     ]
     return "\n".join(lines) + "\n"
 

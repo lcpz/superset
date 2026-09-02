@@ -81,7 +81,7 @@ jobs:
           if [ -z "$BOARD_ISSUE" ]; then
             gh label create devin:status-board --repo "$GITHUB_REPOSITORY" --color 1d76db --description "Hosts the Devin status board" --force
             BOARD_ISSUE=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "Devin status board" --label devin:status-board \
-              --body "Automated report, refreshed by the devin-report workflow. See docs/devin-observability.md." | grep -oE '[0-9]+$')
+              --body "Automated report, refreshed by the devin-report workflow. See .github/devin-observability.md." | grep -oE '[0-9]+$')
           fi
           COMMENT_ID=$(gh api "repos/$GITHUB_REPOSITORY/issues/$BOARD_ISSUE/comments?per_page=100" \
             --jq '[.[] | select(.body | startswith("<!-- devin-status-board -->"))][0].id // empty')
