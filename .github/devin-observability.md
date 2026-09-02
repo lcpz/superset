@@ -108,6 +108,45 @@ that produced the board is linked at the bottom of the comment. Status is a
 pure function of these sources (`_classify` in `scripts/devin_report.py`), so
 any status can be reproduced by opening the links.
 
+## PR-centric snapshots and gap dispatch (`scripts/devin_observability.py`)
+
+The status board answers "which issues are done?". The observability collector
+answers "is every Devin PR being looked after?" and feeds a Postgres database
+that Superset itself can explore.
+
+**Cadence.** The `observability` job of `devin-report.yml` runs every 6 hours
+(and with every daily board run). It always uploads `devin-obs-snapshot.json`
+as an artifact and, when `DEVIN_OBS_DATABASE_URL` is set, upserts it into the
+`devin_obs` schema (`snapshots`, `pull_requests`, `pull_request_history`,
+`check_runs`, `sessions`, `automations`, `findings`, `dispatches`).
+
+**Findings.** For every open, non-draft PR the collector derives
+`ci-failed-unattended`, `review-unaddressed` and `changes-requested-unaddressed`
+when the condition is older than `DEVIN_OBS_GRACE_HOURS` (default 2) and no
+Devin commit, comment or session has touched the PR since. These are exactly
+the cases the event-driven automations ("pick up `devin:ready`", "address PR
+feedback & failed CI") may have missed (dropped webhook, rate limit, session
+failure); anything they already handle produces no finding.
+
+**Dispatch.** `dispatch` creates one Devin session per finding via
+`POST /v3/organizations/{org}/sessions` (tag `devin-obs`, `max_acu_limit`),
+records it in `dispatches`, and leaves a hidden `<!-- devin-obs:dispatch … -->`
+marker comment on the PR so later runs (and the recurring Devin automation
+"6-hourly observability review") treat the finding as handled. Sessions are told
+to fix on the same branch and never merge, approve, enable auto-merge or push
+to `master`; humans still merge.
+
+**Task-spec issues.** `.github/ISSUE_TEMPLATE/devin-task.yml` is a structured
+spec (goal, scope, acceptance criteria, constraints, size). Opening an issue
+with it starts an implementation session directly, without the `devin:ready`
+label; the resulting `devin/*` PR is covered by the same feedback/CI
+automation and by this collector.
+
+Additional configuration: `DEVIN_OBS_DATABASE_URL` (repository secret),
+`DEVIN_OBS_IGNORE_CHECKS` (informational checks, default `actions-timeline`),
+`DEVIN_OBS_LOOKBACK_DAYS` (default 60), `DEVIN_CREATE_AS_USER_ID` (optional,
+requires `ImpersonateOrgSessions`).
+
 ## Limitations
 
 * Sessions are matched to issues by `#<n>` in the session title or by sharing

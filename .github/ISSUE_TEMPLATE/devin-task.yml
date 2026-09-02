@@ -1,0 +1,53 @@
+name: Devin task
+description: A self-contained task specification for Devin to implement autonomously (opens a PR; humans review and merge)
+title: "[devin-task] "
+labels: ["devin:task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!-- devin:task-spec -->
+        Filling this form starts a Devin session as soon as the issue is opened
+        (automation "Superset: implement task-spec issues"). Devin claims the issue
+        with `devin:in-progress`, opens a `devin/<issue>-<slug>` PR and marks it
+        `devin:done` once CI is green. CI failures and review comments on that PR
+        are handled by the "address PR feedback & failed CI" automation.
+        Add a `blocked-*` label before submitting if the task must wait.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One paragraph — what should exist or behave differently once this is done, and why.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Files/modules/APIs in scope, and anything explicitly out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Verifiable checklist; each item should be testable in CI or by reviewing the PR.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Compatibility, migrations (SIP-59), permissions, performance, or process constraints.
+  - type: dropdown
+    id: size
+    attributes:
+      label: Expected size
+      options:
+        - S (single PR, < 300 lines)
+        - M (single PR, may need a follow-up)
+        - L (Devin should propose a split before coding)
+    validations:
+      required: true
