@@ -870,7 +870,14 @@ class TestDashboardActivityView(SupersetTestCase):
             # envelope — not an error.
             rv_none = self._activity(dashboard_uuid, q="zz-no-such-needle-zz")
             body_none = _json.loads(rv_none.data.decode("utf-8"))
-            assert body_none == {"result": [], "count": 0, "truncated": False}
+            assert body_none["result"] == []
+            assert body_none["count"] == 0
+            assert body_none["truncated"] is False
+            assert set(body_none["retention"]) == {
+                "version_history_days",
+                "pruning_enabled",
+                "history_begins_at",
+            }
         finally:
             db.session.rollback()
             dashboard = (
