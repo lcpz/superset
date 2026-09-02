@@ -164,7 +164,7 @@ class UpdateDatasetCommand(UpdateMixin, BaseCommand):
         ):
             self._validate_table_access(db, table, exceptions)
 
-        self._validate_sql_access(db, catalog, schema, exceptions)
+        self._validate_sql_access(db, catalog, schema, source_changed, exceptions)
 
     def _get_new_database_connection(
         self, database_id: int | None, exceptions: list[ValidationError]
@@ -242,14 +242,22 @@ class UpdateDatasetCommand(UpdateMixin, BaseCommand):
         db: Database,
         catalog: str | None,
         schema: str | None,
+        source_changed: bool,
         exceptions: list[ValidationError],
     ) -> None:
-        """Validate SQL query access if SQL is being updated."""
+        """
+        Validate data access for a virtual dataset's SQL.
+
+        Runs whenever the effective SQL or the binding it executes against
+        (database, catalog, schema) changes: the catalog/schema are applied as
+        the default namespace at query time, so unqualified references in
+        unchanged SQL resolve to the new location and must be re-authorized.
+        """
         # we know we have a valid model
         self._model = cast(SqlaTable, self._model)
 
-        sql = self._properties.get("sql")
-        if sql and sql != self._model.sql:
+        sql = self._properties.get("sql", self._model.sql)
+        if sql and (source_changed or sql != self._model.sql):
             try:
                 security_manager.raise_for_access(
                     database=db,
