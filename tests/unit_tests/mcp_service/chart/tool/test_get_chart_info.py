@@ -615,3 +615,72 @@ async def test_validate_dataset_access_skips_perm_check_for_guest() -> None:
 
     assert outcome is None
     mock_validate.assert_not_called()
+
+
+class TestSerializeChartObjectDatasetIdentity:
+    """serialize_chart_object exposes a stable dataset handle (PR 1)."""
+
+    @staticmethod
+    def _chart(**overrides):
+        from uuid import UUID
+
+        chart = SimpleNamespace(
+            id=7,
+            slice_name="Sales",
+            viz_type="table",
+            datasource_id=12,
+            datasource_name="vehicle_sales",
+            datasource_type="table",
+            table=SimpleNamespace(uuid=UUID("11111111-2222-4333-8444-555555555555")),
+            params=None,
+            tags=[],
+            editors=[],
+            uuid=None,
+        )
+        for key, value in overrides.items():
+            setattr(chart, key, value)
+        return chart
+
+    def test_table_backed_chart_exposes_datasource_id_and_dataset_uuid(self):
+        from superset.mcp_service.chart.schemas import serialize_chart_object
+
+        result = serialize_chart_object(self._chart())
+
+        assert result is not None
+        assert result.datasource_id == 12
+        assert result.dataset_uuid == "11111111-2222-4333-8444-555555555555"
+
+    def test_non_table_chart_has_no_dataset_uuid(self):
+        from superset.mcp_service.chart.schemas import serialize_chart_object
+
+        result = serialize_chart_object(
+            self._chart(datasource_type="query", table=None)
+        )
+
+        assert result is not None
+        assert result.datasource_id == 12
+        assert result.dataset_uuid is None
+
+    def test_dangling_table_reference_yields_none(self):
+        from superset.mcp_service.chart.schemas import serialize_chart_object
+
+        result = serialize_chart_object(self._chart(table=None))
+
+        assert result is not None
+        assert result.dataset_uuid is None
+
+    def test_non_int_datasource_id_is_dropped(self):
+        from superset.mcp_service.chart.schemas import serialize_chart_object
+
+        result = serialize_chart_object(self._chart(datasource_id=Mock()))
+
+        assert result is not None
+        assert result.datasource_id is None
+
+    def test_default_columns_include_dataset_identity(self):
+        from superset.mcp_service.chart.schemas import (
+            DEFAULT_GET_CHART_INFO_COLUMNS,
+        )
+
+        assert "datasource_id" in DEFAULT_GET_CHART_INFO_COLUMNS
+        assert "dataset_uuid" in DEFAULT_GET_CHART_INFO_COLUMNS
