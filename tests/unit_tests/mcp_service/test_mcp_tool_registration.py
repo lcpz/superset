@@ -272,6 +272,21 @@ def test_disabled_tools_absent_from_instructions() -> None:
     assert "- list_dashboards:" in instructions
 
 
+def test_disabling_one_audit_tool_keeps_siblings_advertised() -> None:
+    """Each versions/activity tool has its own bullet, so disabling one must
+    not hide its enabled siblings from the instructions."""
+    instructions = get_default_instructions(
+        disabled_tools={"get_dashboard_versions", "get_dataset_activity"}
+    )
+
+    assert "get_dashboard_versions" not in instructions
+    assert "get_dataset_activity" not in instructions
+    assert "- get_chart_versions:" in instructions
+    assert "- get_dataset_versions:" in instructions
+    assert "- get_chart_activity:" in instructions
+    assert "- get_dashboard_activity:" in instructions
+
+
 def test_disabling_get_instance_info_removes_all_prose_references() -> None:
     """Disabling get_instance_info must remove ALL prose references to it,
     not only the bullet-point entry in the Available tools section."""
