@@ -311,6 +311,77 @@ not just definition evidence.
   `MCP_GUEST_ALLOWED_TOOLS`. Embedded guest tokens remain unable to see
   lineage, versions, activity, or evidence exports.
 
+## 6. Implementation notes / lessons learned
+
+Recorded while landing PRs 1–5 (`lcpz/superset#8`–`#12`).
+
+**What shipped vs. the plan**
+
+- PR 1 (#8): `ChartInfo.datasource_id` + `ChartInfo.dataset_uuid`; the UUID
+  is `None` for non-`table` datasources or dangling `table` relationships.
+- PR 2 (#9): `related_objects` gained additive `truncated`/`page`/`page_size`
+  per collection; child access filtering happens *before* counting so
+  `count` is the visible count. `retention` block
+  (`version_history_days`, `pruning_enabled`, `history_begins_at`) on
+  versions and activity. `DatasetDAO.get_related_objects(database_id)` was
+  renamed to `dataset_id` (positional call sites unaffected).
+- PR 3 (#10): `get_dataset_usage` MCP tool, sharing
+  `superset/datasets/related_objects.py` with the REST endpoint.
+- PR 4 (#11): six per-asset tools (`get_{chart,dashboard,dataset}_{versions,activity}`)
+  over a common `superset/mcp_service/versioning/service.py`; a single
+  version is addressed by `version_uuid` only.
+- PR 5 (#12): `GET /api/v1/dataset/<uuid>/migration_evidence/` and
+  `export_dataset_migration_evidence`, both over
+  `superset/versioning/evidence.py`. Streaming-on-demand, no migration.
+  `ReportExecutionLog` is read directly under `ReportExecutionLogFilter`
+  (the narrative placed this in PR 6 territory; it turned out to be cheap
+  to include, only the *correlation id* is deferred). Query evidence uses
+  a heuristic table-name match and is labelled as such.
+
+**Access control**
+
+- `resolve_endpoint_path_entity` expects a FAB API object whose
+  `response_40x` methods return Flask `Response`s and raises
+  `PathEntityResponseError`. The MCP side reuses it through a tiny adapter
+  (`superset/mcp_service/utils/audit_access.py::resolve_audit_entity`) that
+  captures the status and maps 400/403/404 to structured tool errors, so
+  REST and MCP fail closed identically.
+- None of the new tools are in `INFO_TOOLS`/`DATA_QUERY_TOOLS` or
+  `MCP_GUEST_ALLOWED_TOOLS`; tests assert both.
+
+**Determinism / hashing**
+
+- `hash_from_dict(..., algorithm=...)` is typed
+  `Literal["md5", "sha256"] | None`; pin the constant as
+  `Literal["sha256"]` or mypy rejects it. Hash the `evidence` dict, keep
+  `generated_at` outside it, and never truncate after hashing — bounds
+  (`page_size ≤ 25`, `record_limit ≤ 200`) are applied first and reported
+  via `truncated`/`coverage.complete`.
+- Continuum `issued_at` is naive UTC; `retention_disclosure()` and the
+  evidence window comparisons use naive UTC too, to match the pruning task.
+- Pruned `before`/`after` snapshots keep their `version_uuid`/`transaction_id`
+  and report `unavailable_reason: "pruned_or_missing"` rather than dropping
+  the row, so a digest still covers the handle.
+
+**Test-harness quirks**
+
+- Importing `superset.mcp_service.app` or any ORM-model module outside the
+  pytest conftest fails with "App not initialized yet" — not a defect.
+- MCP dataset tests use `Client(mcp)` with `get_user_from_request` patched;
+  DAO/security patches must target the *shared helper* module, not the tool.
+- Lint that bit: mypy runs on tests (bare `dict` rejected; `SimpleNamespace`
+  stand-ins need an `Any`-typed factory), ruff `PT011` needs `match=`,
+  `PT018` forbids compound asserts, `auto-walrus` rewrites tests.
+- Dev VM: Python 3.11 venv via `uv venv --python 3.11 .venv`; dev
+  requirements install minus `mysqlclient`/`python-ldap` (no system
+  headers). Run `pre-commit` with the venv activated.
+
+**Deferred**
+
+- PR 6 (cross-trail correlation id on `Query`/`ReportExecutionLog`
+  transactions, SIP-59 migration) remains future work; PR 5 flags query
+  correlation as heuristic until it lands.
+
 ## References
 
 Line numbers are against the fork's `master` at the time of writing and are
