@@ -1019,6 +1019,7 @@ class DatasetUsageDashboard(BaseModel):
     uuid: str | None = None
     slug: str | None = None
     title: str | None = None
+    json_metadata: str | None = None
 
 
 class CompletenessEnvelope(BaseModel):

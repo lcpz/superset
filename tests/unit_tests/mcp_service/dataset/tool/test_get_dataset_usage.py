@@ -54,7 +54,7 @@ def _related(n_charts: int, n_dashboards: int) -> dict[str, list[SimpleNamespace
         ],
         "dashboards": [
             SimpleNamespace(
-                id=i, uuid=None, json_metadata=None, slug=None, dashboard_title=f"d{i}"
+                id=i, uuid=None, json_metadata="{}", slug=None, dashboard_title=f"d{i}"
             )
             for i in range(n_dashboards)
         ],
@@ -97,6 +97,7 @@ async def test_usage_paginated_with_completeness_markers() -> None:
     assert data["dashboards"]["count"] == 1
     assert data["dashboards"]["truncated"] is False
     assert data["dashboards"]["result"][0]["title"] == "d0"
+    assert data["dashboards"]["result"][0]["json_metadata"] == "{}"
 
 
 @pytest.mark.asyncio
