@@ -979,3 +979,84 @@ def serialize_dataset_object(dataset: Any) -> DatasetInfo | None:
         metrics=metrics,
         is_favorite=getattr(dataset, "is_favorite", None),
     )
+
+
+# ---- Dataset reverse usage (related objects) ------------------------------
+
+
+class GetDatasetUsageRequest(BaseModel):
+    """Request schema for get_dataset_usage."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    dataset_uuid: Annotated[
+        str,
+        Field(
+            description="UUID of the dataset (stable handle; see get_dataset_info)",
+            validation_alias=AliasChoices("dataset_uuid", "uuid", "identifier"),
+        ),
+    ]
+    page: Annotated[int, Field(0, ge=0, description="0-based page")] = 0
+    page_size: Annotated[
+        int,
+        Field(50, ge=1, le=200, description="Items per page for each list"),
+    ] = 50
+
+
+class DatasetUsageChart(BaseModel):
+    """A chart that reads from the dataset."""
+
+    id: int
+    uuid: str | None = None
+    slice_name: str | None = None
+    viz_type: str | None = None
+
+
+class DatasetUsageDashboard(BaseModel):
+    """A dashboard containing at least one dependent chart."""
+
+    id: int
+    uuid: str | None = None
+    slug: str | None = None
+    title: str | None = None
+
+
+class CompletenessEnvelope(BaseModel):
+    """Completeness disclosure attached to every paginated list."""
+
+    count: int = Field(..., description="Total items visible to the caller")
+    truncated: bool = Field(..., description="True when more pages exist")
+    page: int
+    page_size: int
+
+
+class DatasetUsageCharts(CompletenessEnvelope):
+    result: List[DatasetUsageChart]
+
+
+class DatasetUsageDashboards(CompletenessEnvelope):
+    result: List[DatasetUsageDashboard]
+
+
+class DatasetUsageResponse(BaseModel):
+    """Response schema for get_dataset_usage."""
+
+    dataset_id: int
+    dataset_uuid: str
+    table_name: str | None = None
+    scope: str = Field(
+        "table_backed_charts",
+        description=(
+            "Only charts with datasource_type='table' are inventoried; SQL Lab "
+            "queries, saved queries and reports referencing the dataset are not."
+        ),
+    )
+    soft_delete_filtered: bool = Field(
+        ...,
+        description=(
+            "True when the SOFT_DELETE feature flag is on and soft-deleted charts/"
+            "dashboards are excluded; False means deletes are hard deletes."
+        ),
+    )
+    charts: DatasetUsageCharts
+    dashboards: DatasetUsageDashboards
