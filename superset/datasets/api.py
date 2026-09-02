@@ -176,6 +176,7 @@ class DatasetRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
         "list_versions",
         "get_version",
         "activity",
+        "migration_evidence",
         "restore_version",
     }
     list_columns = [
@@ -2107,6 +2108,115 @@ class DatasetRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
         from superset.versioning.activity import activity_endpoint
 
         return activity_endpoint(self, SqlaTable, uuid_str, request.args)
+
+    @expose("/<uuid_str>/migration_evidence/", methods=("GET",))
+    @protect()
+    @safe
+    @permission_name("get")
+    @statsd_metrics
+    @event_logger.log_this_with_context(
+        action=lambda self, *args, **kwargs: (
+            f"{self.__class__.__name__}.migration_evidence"
+        ),
+        log_to_statsd=False,
+    )
+    def migration_evidence(self, uuid_str: str) -> Response:
+        """Return a reviewable, SHA-256 digested migration evidence bundle.
+        ---
+        get:
+          summary: Export dataset-migration evidence for one bounded page
+          description: >-
+            Bundles the dependent-asset inventory (one page), before/after
+            version snapshots addressed by version_uuid/transaction_id, own
+            activity records, report/alert executions and heuristically
+            correlated SQL Lab executions, plus retention/coverage disclosures.
+            `digest.value` is `sha256` over the canonical `evidence` object
+            (sorted keys). Inputs are bounded before hashing; nothing is
+            truncated afterwards. The digest proves bundle integrity, not the
+            truthfulness of live database state.
+          parameters:
+          - in: path
+            schema:
+              type: string
+              format: uuid
+            name: uuid_str
+          - in: query
+            name: since
+            schema:
+              type: string
+              format: date-time
+          - in: query
+            name: until
+            schema:
+              type: string
+              format: date-time
+          - in: query
+            name: page
+            schema:
+              type: integer
+          - in: query
+            name: page_size
+            schema:
+              type: integer
+              maximum: 25
+          - in: query
+            name: record_limit
+            schema:
+              type: integer
+              maximum: 200
+          responses:
+            200:
+              description: Evidence bundle
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      evidence:
+                        type: object
+                      digest:
+                        type: object
+                        properties:
+                          algorithm:
+                            type: string
+                          value:
+                            type: string
+                          covers:
+                            type: string
+                      generated_at:
+                        type: string
+            400:
+              $ref: '#/components/responses/400'
+            401:
+              $ref: '#/components/responses/401'
+            403:
+              $ref: '#/components/responses/403'
+            404:
+              $ref: '#/components/responses/404'
+        """
+        # pylint: disable=import-outside-toplevel
+        from superset.versioning.activity import (
+            PathEntityResponseError,
+            resolve_endpoint_path_entity,
+        )
+        from superset.versioning.evidence import (
+            evidence_response_payload,
+            EvidenceParamsError,
+            parse_evidence_query_params,
+        )
+
+        try:
+            dataset, _ = resolve_endpoint_path_entity(self, SqlaTable, uuid_str)
+        except PathEntityResponseError as exc:
+            return exc.response
+        try:
+            params = parse_evidence_query_params(request.args)
+            payload = evidence_response_payload(dataset, params)
+        except EvidenceParamsError as exc:
+            return self.response_400(message=str(exc))
+        response = self.response(200, **payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @expose(
         "/<uuid_str>/versions/<version_uuid_str>/restore",

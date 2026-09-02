@@ -352,6 +352,8 @@ MCP_CACHE_CONFIG: dict[str, Any] = {
     # which fails with the specific missing tool name(s) if a new
     # non-read-only tool is added without also being added here.
     "excluded_tools": [
+        # Read-only, but its SHA-256 digest must reflect live state.
+        "export_dataset_migration_evidence",
         "add_chart_to_existing_dashboard",
         "create_dataset",
         "create_theme",
