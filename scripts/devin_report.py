@@ -64,6 +64,8 @@ SESSION_TAG = "issue-automation"
 
 STALE_IN_PROGRESS = timedelta(hours=6)
 DISPATCH_GRACE = timedelta(minutes=15)
+LOOKBACK = timedelta(days=int(os.environ.get("DEVIN_REPORT_LOOKBACK_DAYS", "90")))
+AUTOMATION_AUTHORS = {"devin-ai-integration[bot]"}
 
 JsonDict = dict[str, Any]
 
@@ -113,8 +115,12 @@ class GitHubClient:
             page += 1
         return results
 
-    def issues(self) -> list[JsonDict]:
-        issues = self._paginate(f"/repos/{self.repo}/issues", {"state": "all"})
+    def issues(self, since: datetime) -> list[JsonDict]:
+        """Issues (not PRs) updated since ``since``; bounds the per-issue lookups."""
+        issues = self._paginate(
+            f"/repos/{self.repo}/issues",
+            {"state": "all", "since": since.strftime("%Y-%m-%dT%H:%M:%SZ")},
+        )
         return [issue for issue in issues if "pull_request" not in issue]
 
     def issue_events(self, number: int) -> list[JsonDict]:
@@ -213,6 +219,13 @@ def _ready_events(events: list[JsonDict]) -> list[datetime]:
     )
 
 
+def _md_cell(text: str) -> str:
+    """Neutralise Markdown/HTML in untrusted text placed inside a table cell."""
+    text = re.sub(r"[\r\n]+", " ", text)
+    text = re.sub(r"([\\`*_\[\]<>|~#!])", r"\\\1", text)
+    return text[:120]
+
+
 def _pr_numbers_from_text(repo: str, text: str) -> set[int]:
     numbers: set[int] = set()
     for match in re.finditer(
@@ -234,7 +247,13 @@ def _pull_state(gh: GitHubClient, number: int) -> PullState:
         checks = "success"
     else:
         checks = "failure"
-    approved = any(r.get("state") == "APPROVED" for r in gh.reviews(number))
+    latest: dict[str, str] = {}
+    for review in gh.reviews(number):
+        if review.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            latest[(review.get("user") or {}).get("login", "")] = review["state"]
+    approved = "APPROVED" in latest.values() and "CHANGES_REQUESTED" not in (
+        latest.values()
+    )
     evidence = [pull["html_url"], f"{pull['html_url']}/checks"]
     return PullState(
         url=pull["html_url"],
@@ -285,7 +304,7 @@ def build_rows(
     gh: GitHubClient, sessions: list[JsonDict], now: datetime
 ) -> list[IssueRow]:
     rows: list[IssueRow] = []
-    for issue in gh.issues():
+    for issue in gh.issues(since=now - LOOKBACK):
         number = issue["number"]
         ready = _ready_events(gh.issue_events(number))
         if not ready:
@@ -302,7 +321,8 @@ def build_rows(
         )
         pr_numbers: set[int] = set()
         for comment in gh.issue_comments(number):
-            pr_numbers |= _pr_numbers_from_text(gh.repo, comment.get("body", ""))
+            if (comment.get("user") or {}).get("login") in AUTOMATION_AUTHORS:
+                pr_numbers |= _pr_numbers_from_text(gh.repo, comment.get("body", ""))
         row.sessions = [
             s for s in sessions if _session_matches(gh.repo, s, number, pr_numbers)
         ]
@@ -408,7 +428,7 @@ def render(
         approved_cell = ("yes" if row.pull.approved else "no") if row.pull else "—"
         evidence = " ".join(f"[{i + 1}]({u})" for i, u in enumerate(row.evidence))
         lines.append(
-            f"| [#{row.number}]({row.url}) {row.title} | **{row.status}** | "
+            f"| [#{row.number}]({row.url}) {_md_cell(row.title)} | **{row.status}** | "
             f"{len(row.sessions)} | {row.replays} | {row.acus} | {pr_cell} | "
             f"{ci_cell} | {approved_cell} | {evidence} |"
         )

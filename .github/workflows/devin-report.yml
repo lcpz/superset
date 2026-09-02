@@ -75,7 +75,10 @@ jobs:
           BOARD_ISSUE: ${{ inputs.board_issue || vars.DEVIN_BOARD_ISSUE }}
         run: |
           set -euo pipefail
-          if [ -z "$BOARD_ISSUE" ]; then
+          if [ -n "$BOARD_ISSUE" ]; then
+            gh issue view "$BOARD_ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx devin:status-board \
+              || { echo "::error::issue #$BOARD_ISSUE is not labeled devin:status-board"; exit 1; }
+          else
             BOARD_ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" --label devin:status-board --state open --json number --jq '.[0].number // empty')
           fi
           if [ -z "$BOARD_ISSUE" ]; then
@@ -83,8 +86,8 @@ jobs:
             BOARD_ISSUE=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "Devin status board" --label devin:status-board \
               --body "Automated report, refreshed by the devin-report workflow. See .github/devin-observability.md." | grep -oE '[0-9]+$')
           fi
-          COMMENT_ID=$(gh api "repos/$GITHUB_REPOSITORY/issues/$BOARD_ISSUE/comments?per_page=100" \
-            --jq '[.[] | select(.body | startswith("<!-- devin-status-board -->"))][0].id // empty')
+          COMMENT_ID=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$BOARD_ISSUE/comments?per_page=100" \
+            --jq '[.[][] | select(.body | startswith("<!-- devin-status-board -->"))][0].id // empty')
           if [ -n "$COMMENT_ID" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" -F body=@report.md >/dev/null
           else

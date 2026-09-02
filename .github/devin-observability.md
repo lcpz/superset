@@ -37,6 +37,10 @@ and shown in the run summary.
 | Repository secret | `DEVIN_ORG_ID` | `org-…` |
 | Repository variable | `DEVIN_AUTOMATION_ID` | `auto-…` (the `devin:ready` automation) |
 | Repository variable | `DEVIN_BOARD_ISSUE` | optional; issue number hosting the board (auto-created and labeled `devin:status-board` otherwise) |
+| Repository variable | `DEVIN_REPORT_LOOKBACK_DAYS` | optional; only issues updated within this window are scanned (default 90) |
+
+Any explicitly selected board issue (variable or manual input) must carry the
+`devin:status-board` label, otherwise the run fails instead of posting.
 
 Without the Devin secrets the report still runs on GitHub data only; health and
 ACU columns show `unknown`/`0`.
