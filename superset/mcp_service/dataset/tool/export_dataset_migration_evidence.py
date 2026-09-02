@@ -65,7 +65,8 @@ async def export_dataset_migration_evidence(
       charts/dashboards (scoped like the report logs API)
     - query_executions: SQL Lab queries on the dataset's database mentioning
       the table name — HEURISTIC, disclosed in `matching`; a hard correlation
-      id is future work (PR 6)
+      id is future work (PR 6). Requires `can_read` on Query (SQL Lab access);
+      otherwise `authorized=False` and the list is empty
     - coverage: retention disclosure, `complete` flag, caveats
 
     INTEGRITY: `digest.value` = sha256 over the canonical `evidence` dict with

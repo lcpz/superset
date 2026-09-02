@@ -49,7 +49,7 @@ from uuid import UUID
 from flask_appbuilder import Model
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 
-from superset import db
+from superset import db, security_manager
 from superset.connectors.sqla.models import SqlaTable
 from superset.daos.version import VersionDAO
 from superset.datasets.related_objects import get_dataset_related_objects
@@ -74,6 +74,13 @@ DIGEST_ALGORITHM: Literal["sha256"] = "sha256"
 MAX_ASSETS_PER_PAGE = 25
 DEFAULT_ASSETS_PER_PAGE = 10
 MAX_RECORDS_PER_COLLECTION = 200
+
+_QUERY_MATCHING_NOTE = (
+    "heuristic: SQL Lab queries on the dataset's database whose sql/"
+    "executed_sql contains the table name (literal, case-insensitive); no hard "
+    "correlation id exists yet (future PR 6). Requires can_read on Query; "
+    "otherwise authorized=False and the collection is empty."
+)
 
 _version_item_schema = VersionListItemSchema()
 _activity_record_schema = ActivityRecordSchema()
@@ -255,16 +262,40 @@ def _report_executions(
     }
 
 
+_LIKE_ESCAPE = "\\"
+
+
+def _like_pattern(table_name: str) -> str:
+    """Literal substring LIKE pattern: ``%``, ``_`` and the escape char escaped."""
+    escaped = (
+        table_name.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+    return f"%{escaped}%"
+
+
 def _query_executions(
     dataset: SqlaTable,
     since: datetime | None,
     until: datetime | None,
     limit: int,
 ) -> dict[str, Any]:
-    needle = f"%{dataset.table_name}%"
+    if not security_manager.can_access("can_read", "Query"):
+        return {
+            "matching": _QUERY_MATCHING_NOTE,
+            "authorized": False,
+            "result": [],
+            "count": 0,
+            "truncated": False,
+        }
+    needle = _like_pattern(dataset.table_name)
     query = db.session.query(Query).filter(
         Query.database_id == dataset.database_id,
-        db.or_(Query.sql.ilike(needle), Query.executed_sql.ilike(needle)),
+        db.or_(
+            Query.sql.ilike(needle, escape=_LIKE_ESCAPE),
+            Query.executed_sql.ilike(needle, escape=_LIKE_ESCAPE),
+        ),
     )
     if since is not None:
         query = query.filter(Query.start_time >= _epoch_ms(since))
@@ -273,11 +304,8 @@ def _query_executions(
     query = QueryFilter("id", SQLAInterface(Query)).apply(query, None)
     rows, truncated = _bounded(query.order_by(Query.id), limit)
     return {
-        "matching": (
-            "heuristic: SQL Lab queries on the dataset's database whose sql/"
-            "executed_sql contains the table name; no hard correlation id "
-            "exists yet (future PR 6)"
-        ),
+        "matching": _QUERY_MATCHING_NOTE,
+        "authorized": True,
         "result": [
             {
                 "query_id": q.id,
@@ -354,6 +382,11 @@ def build_dataset_migration_evidence(
         for d in dashboards
     ]
 
+    report_executions = _report_executions(
+        chart_ids, dashboard_ids, since, until, record_limit
+    )
+    query_executions = _query_executions(dataset, since, until, record_limit)
+
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "dataset": {
@@ -367,10 +400,8 @@ def build_dataset_migration_evidence(
         "page": {"page": page, "page_size": page_size, "record_limit": record_limit},
         "inventory": inventory,
         "assets": assets,
-        "report_executions": _report_executions(
-            chart_ids, dashboard_ids, since, until, record_limit
-        ),
-        "query_executions": _query_executions(dataset, since, until, record_limit),
+        "report_executions": report_executions,
+        "query_executions": query_executions,
         "coverage": {
             "retention": _stable_retention(),
             "inventory_scope": (
@@ -380,6 +411,8 @@ def build_dataset_migration_evidence(
             "complete": not (
                 inventory["charts"]["truncated"]
                 or inventory["dashboards"]["truncated"]
+                or report_executions["truncated"]
+                or query_executions["truncated"]
                 or any(
                     a["versions_in_window"]["truncated"] or a["activity"]["truncated"]
                     for a in assets

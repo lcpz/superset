@@ -22,7 +22,7 @@ import hashlib
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 import pytest
@@ -162,7 +162,9 @@ def evidence_env() -> Any:
         patch(f"{MOD}.ReportExecutionLogFilter") as rlf,
         patch(f"{MOD}.QueryFilter") as qf,
         patch(f"{MOD}.SQLAInterface"),
+        patch(f"{MOD}.security_manager", new=MagicMock()) as sm,
     ):
+        sm.can_access.return_value = True
         db.session.query.side_effect = fake_query
         db.or_ = lambda *a: a
         rlf.return_value.apply.side_effect = lambda q, v: q
@@ -315,3 +317,35 @@ def test_parse_query_params_reuses_activity_datetime_parsing() -> None:
         parse_evidence_query_params({"since": "yesterday"})
     with pytest.raises(EvidenceParamsError, match="page_size"):
         parse_evidence_query_params({"page_size": "many"})
+
+
+@pytest.mark.usefixtures("evidence_env")
+def test_query_evidence_requires_query_read_capability() -> None:
+    from superset.versioning import evidence as mod
+
+    with patch.object(mod.security_manager, "can_access", return_value=False):
+        evidence = _build()
+    assert evidence["query_executions"]["authorized"] is False
+    assert evidence["query_executions"]["result"] == []
+    assert evidence["query_executions"]["count"] == 0
+
+
+@pytest.mark.usefixtures("evidence_env")
+def test_truncated_execution_collections_mark_coverage_incomplete() -> None:
+    from superset.versioning import evidence as mod
+
+    with patch.object(
+        mod,
+        "_report_executions",
+        return_value={"result": [], "count": 0, "truncated": True},
+    ):
+        evidence = _build()
+    assert evidence["report_executions"]["truncated"] is True
+    assert evidence["coverage"]["complete"] is False
+
+
+def test_query_table_name_wildcards_are_escaped() -> None:
+    from superset.versioning.evidence import _like_pattern
+
+    assert _like_pattern("a_b%c\\d") == "%a\\_b\\%c\\\\d%"
+    assert _like_pattern("plain") == "%plain%"
