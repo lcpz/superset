@@ -1728,6 +1728,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         "CssTemplate",
         "Dataset",
         "Datasource",
+        "SemanticLayer",
+        "SemanticView",
         "Theme",
     } | READ_ONLY_MODEL_VIEWS
 
