@@ -472,8 +472,7 @@ def _select_change_rows_for_kinds(
             )
             result = (
                 db.session.connection()
-                .execution_options(stream_results=True)
-                .execute(stmt)
+                .execute(stmt.execution_options(stream_results=True))
                 .mappings()
             )
             ordinal = _merge_result_into_heap(

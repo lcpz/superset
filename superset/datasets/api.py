@@ -2112,7 +2112,6 @@ class DatasetRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
     @expose("/<uuid_str>/migration_evidence/", methods=("GET",))
     @protect()
     @safe
-    @permission_name("get")
     @statsd_metrics
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: (

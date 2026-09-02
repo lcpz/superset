@@ -184,6 +184,20 @@ def _asset_evidence(
     }
 
 
+def _stable_retention() -> dict[str, Any]:
+    """Retention disclosure with ``history_begins_at`` at day resolution.
+
+    Retention is configured in whole days and the pruning task runs on a
+    schedule, so the sub-second prune cutoff carries no information; keeping
+    it would make two back-to-back exports of unchanged state hash differently.
+    """
+    retention = retention_disclosure()
+    cutoff = retention.get("history_begins_at")
+    if isinstance(cutoff, str):
+        retention["history_begins_at"] = cutoff[:10]
+    return retention
+
+
 def _bounded(query: Any, limit: int) -> tuple[list[Any], bool]:
     rows = query.limit(limit + 1).all()
     return rows[:limit], len(rows) > limit
@@ -358,7 +372,7 @@ def build_dataset_migration_evidence(
         ),
         "query_executions": _query_executions(dataset, since, until, record_limit),
         "coverage": {
-            "retention": retention_disclosure(),
+            "retention": _stable_retention(),
             "inventory_scope": (
                 "TABLE-backed charts and dashboards containing them; objects the "
                 "caller cannot access are excluded before counting"
