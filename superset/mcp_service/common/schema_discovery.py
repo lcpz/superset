@@ -274,6 +274,14 @@ CHART_EXTRA_COLUMNS: dict[str, ColumnMetadata] = {
         type="str",
         is_default=False,
     ),
+    "dataset_uuid": ColumnMetadata(
+        name="dataset_uuid",
+        description=(
+            "UUID of the backing dataset for table-backed charts; null otherwise"
+        ),
+        type="str",
+        is_default=False,
+    ),
     "url": ColumnMetadata(
         name="url", description="Chart URL", type="str", is_default=True
     ),
