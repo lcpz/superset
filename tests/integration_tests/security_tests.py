@@ -1516,6 +1516,52 @@ class TestRolePermission(SupersetTestCase):
             security_manager.find_permission_view_menu("can_read", "Dataset")
         )
 
+    def test_semantic_layer_write_is_admin_only(self):
+        """
+        Semantic-layer write permissions register external data connections
+        (with attacker-controlled outbound configuration), a capability
+        SECURITY.md reserves for Admin. Verify the classification predicates
+        keep ``can_write`` out of the Gamma and Alpha tiers while ``can_read``
+        stays available to Gamma+.
+        """
+        for view_menu in ("SemanticLayer", "SemanticView"):
+            write_pvm = security_manager.find_permission_view_menu(
+                "can_write", view_menu
+            )
+            read_pvm = security_manager.find_permission_view_menu(
+                "can_read", view_menu
+            )
+            if not write_pvm or not read_pvm:
+                self.skipTest(f"{view_menu} permissions not registered")
+
+            assert security_manager._is_admin_only(write_pvm) is True
+            assert security_manager._is_alpha_pvm(write_pvm) is False
+            assert security_manager._is_gamma_pvm(write_pvm) is False
+
+            assert security_manager._is_admin_only(read_pvm) is False
+            assert security_manager._is_gamma_pvm(read_pvm) is True
+
+    def test_semantic_layer_write_role_sync(self):
+        """
+        Regression test exercising real role sync (not mocked predicates): after
+        ``sync_role_definitions`` runs, ``can_write`` on the semantic-layer view
+        menus must be granted to Admin only, while ``can_read`` remains available
+        to Gamma. Skips when the ``SEMANTIC_LAYERS`` feature is disabled and the
+        permissions were never registered.
+        """
+        for view_menu in ("SemanticLayer", "SemanticView"):
+            if not security_manager.find_permission_view_menu("can_write", view_menu):
+                self.skipTest(f"{view_menu} permissions not registered")
+
+            admin_perms = get_perm_tuples("Admin")
+            alpha_perms = get_perm_tuples("Alpha")
+            gamma_perms = get_perm_tuples("Gamma")
+
+            assert ("can_write", view_menu) in admin_perms
+            assert ("can_write", view_menu) not in alpha_perms
+            assert ("can_write", view_menu) not in gamma_perms
+            assert ("can_read", view_menu) in gamma_perms
+
     def test_is_public_pvm(self):
         """Test that _is_public_pvm correctly identifies Public role permissions."""
         # Should include core dashboard viewing permissions

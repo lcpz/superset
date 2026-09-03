@@ -2500,3 +2500,37 @@ def test_semantic_layer_views_flag_off_unwrapped() -> None:
 
     assert response == ("404", 404)
     api.response_404.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "api_cls, view_menu, write_methods",
+    [
+        (
+            SemanticLayerRestApi,
+            "SemanticLayer",
+            ("post", "put", "delete"),
+        ),
+        (
+            SemanticViewRestApi,
+            "SemanticView",
+            ("post", "put", "delete", "bulk_delete"),
+        ),
+    ],
+)
+def test_semantic_layer_write_routes_require_can_write(
+    api_cls: Any,
+    view_menu: str,
+    write_methods: tuple[str, ...],
+) -> None:
+    """
+    Route-level auth wiring: creating/updating/deleting semantic layers and
+    views registers external data connections, a capability SECURITY.md
+    reserves for Admin. ``@protect()`` derives the required permission from
+    ``class_permission_name`` + ``method_permission_name``; assert every write
+    route resolves to ``can_write`` on the correct view menu so role sync keeps
+    it out of the Gamma/Alpha tiers (see
+    ``tests/integration_tests/security_tests.py`` role-sync regression test).
+    """
+    assert api_cls.class_permission_name == view_menu
+    for method in write_methods:
+        assert api_cls.method_permission_name[method] == "write"
