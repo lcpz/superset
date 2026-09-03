@@ -54,7 +54,9 @@ ACU columns show `unknown`/`0`.
 | `healthy` | Automation `enabled` in Devin and every recent `devin:ready` event produced a session |
 | `DEGRADED` | Enabled, but at least one issue is `dispatch-missed` (see below) |
 | `DISABLED` | Automation is switched off |
-| `unknown` | Devin secrets/automation id not configured |
+| `unknown (DEVIN_API_KEY not configured)` | Devin secrets/automation id not configured |
+| `unknown (Devin API error)` | The Devin session API could not be reached; board built from GitHub evidence only (see the note for the HTTP detail) |
+| `unknown (automation record not readable)` | Sessions were fetched but the automation record is not visible to the service user (personal `run_as: creator` automations), so enabled state could not be verified |
 
 The Devin API exposes `last_invocation` (`succeeded | failed | skipped` and
 timestamp) but no run history, so health is inferred from enabled state plus
@@ -72,9 +74,11 @@ survive label clean-up). Status precedence:
 | `done` | `devin:done`, PR open, CI not failing — agent finished, awaiting review |
 | `failed-ci` | `devin:done` but the PR's latest check runs failed |
 | `in-progress` | `devin:in-progress` with a session `working`/`resumed`, or within 6 h of labeling |
+| `in-progress (session data unavailable)` | `devin:in-progress` but the Devin session API was unreachable, so `stalled` cannot be inferred |
 | `stalled` | `devin:in-progress` but session `blocked`/`expired` or older than 6 h with no PR |
 | `finished-no-label` | Sessions exist but no `devin:*` outcome label — agent stopped at the gate or crashed; read the session |
 | `dispatch-missed` | `devin:ready` for >15 min and no session — automation did not fire (bot-added labels do not trigger it) |
+| `ready (session data unavailable)` | `devin:ready` but the Devin session API was unreachable, so `dispatch-missed` cannot be inferred |
 | `queued` | `devin:ready` added <15 min ago |
 | `closed` | Issue closed without a merged Devin PR (abandoned or done by hand) |
 | `unlabeled` | Open issue whose `devin:*` labels were removed; kept for history |

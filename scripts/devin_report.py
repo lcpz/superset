@@ -265,7 +265,7 @@ def _pull_state(gh: GitHubClient, number: int) -> PullState:
     )
 
 
-def _classify(row: IssueRow, now: datetime) -> str:
+def _classify(row: IssueRow, now: datetime, sessions_known: bool = True) -> str:
     labels = set(row.labels)
     session_states = {s.get("status") for s in row.sessions}
     if any(label.startswith(LABEL_BLOCKED_PREFIX) for label in labels):
@@ -277,23 +277,31 @@ def _classify(row: IssueRow, now: datetime) -> str:
             return "failed-ci"
         return "done"
     if LABEL_IN_PROGRESS in labels:
-        return _classify_in_progress(row, session_states, now)
+        return _classify_in_progress(row, session_states, now, sessions_known)
     if LABEL_READY in labels:
-        if row.sessions:
-            return "finished-no-label"
-        if row.ready_at and now - row.ready_at > DISPATCH_GRACE:
-            return "dispatch-missed"
-        return "queued"
+        return _classify_ready(row, now, sessions_known)
     if row.closed:
         return "closed"
     return "unlabeled"
 
 
+def _classify_ready(row: IssueRow, now: datetime, sessions_known: bool) -> str:
+    if row.sessions:
+        return "finished-no-label"
+    if not sessions_known:
+        return "ready (session data unavailable)"
+    if row.ready_at and now - row.ready_at > DISPATCH_GRACE:
+        return "dispatch-missed"
+    return "queued"
+
+
 def _classify_in_progress(
-    row: IssueRow, session_states: set[Any], now: datetime
+    row: IssueRow, session_states: set[Any], now: datetime, sessions_known: bool
 ) -> str:
     if session_states & {"working", "resumed"}:
         return "in-progress"
+    if not sessions_known:
+        return "in-progress (session data unavailable)"
     stale = row.ready_at is not None and now - row.ready_at > STALE_IN_PROGRESS
     if session_states & {"blocked", "expired"} or stale:
         return "stalled"
@@ -301,8 +309,13 @@ def _classify_in_progress(
 
 
 def build_rows(
-    gh: GitHubClient, sessions: list[JsonDict], now: datetime
+    gh: GitHubClient,
+    sessions: list[JsonDict],
+    now: datetime,
+    sessions_known: bool = True,
 ) -> list[IssueRow]:
+    """Join issues with sessions; ``sessions_known`` is False when the Devin
+    session list could not be fetched, so no status is inferred from its absence."""
     rows: list[IssueRow] = []
     for issue in gh.issues(since=now - LOOKBACK):
         number = issue["number"]
@@ -338,7 +351,7 @@ def build_rows(
             row.pull = _pull_state(gh, max(pr_numbers))
             row.evidence.extend(row.pull.evidence)
 
-        row.status = _classify(row, now)
+        row.status = _classify(row, now, sessions_known)
         rows.append(row)
     return rows
 
@@ -364,11 +377,9 @@ def automation_health(
     notes: list[str] = []
     if not devin_enabled:
         return "unknown (DEVIN_API_KEY not configured)", notes
-    if automation is None:
-        return "unknown (automation id not configured)", notes
-    if not automation.get("enabled"):
+    if automation is not None and not automation.get("enabled"):
         return "DISABLED", notes
-    if last := automation.get("last_invocation") or {}:
+    if automation and (last := automation.get("last_invocation") or {}):
         fired = datetime.fromtimestamp(last["fired_at"], tz=timezone.utc)
         notes.append(f"last invocation: {last['status']} at {fired.isoformat()}")
     missed = [r for r in rows if r.status == "dispatch-missed"]
@@ -377,6 +388,10 @@ def automation_health(
             "dispatch missed for: " + ", ".join(f"#{r.number}" for r in missed)
         )
         return "DEGRADED", notes
+    if automation is None:
+        # Personal (run_as creator) automations are invisible to service users.
+        notes.append("no dispatch missed, but enabled state could not be verified")
+        return "unknown (automation record not readable)", notes
     return "healthy", notes
 
 
@@ -453,10 +468,32 @@ def main(argv: list[str] | None = None) -> int:
     automation_id = os.environ.get("DEVIN_AUTOMATION_ID", "")
     now = datetime.now(tz=timezone.utc)
 
-    sessions = devin.sessions(automation_id or None)
-    automation = devin.automation(automation_id)
-    rows = build_rows(gh, sessions, now)
-    health, notes = automation_health(automation, rows, devin.enabled)
+    devin_error = ""
+    sessions: list[JsonDict] = []
+    sessions_known = devin.enabled
+    automation: JsonDict | None = None
+    try:
+        sessions = devin.sessions(automation_id or None)
+    except (RuntimeError, OSError, json.JSONDecodeError) as exc:
+        # Report from GitHub evidence only; the health line explains the gap.
+        print(f"::warning::Devin API unavailable: {exc}", file=sys.stderr)
+        devin_error = str(exc)
+        sessions_known = False
+    else:
+        try:
+            automation = devin.automation(automation_id)
+        except (RuntimeError, OSError, json.JSONDecodeError) as exc:
+            print(f"::warning::Devin automation lookup failed: {exc}", file=sys.stderr)
+    rows = build_rows(gh, sessions, now, sessions_known)
+    health, notes = automation_health(automation, rows, sessions_known)
+    if devin_error:
+        health = "unknown (Devin API error)"
+        detail = _md_cell(devin_error.split(" -> ")[-1])
+        # Only a 403 points at a missing permission; other failures (network
+        # outages, rate limits, 5xx) would make the ViewOrgSessions hint wrong.
+        if " -> 403" in devin_error:
+            detail += " (check the service user's ViewOrgSessions permission)"
+        notes.append(f"Devin API: {detail}")
     report = render(repo, rows, health, notes, sessions, now)
 
     if args.output:

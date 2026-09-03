@@ -243,7 +243,7 @@ class DevinClient:
         params: dict[str, Any] = {
             "first": "200",
             "repo_names": repo,
-            "created_after": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "created_after": str(int(since.timestamp())),
         }
         results: list[JsonDict] = []
         after: str | None = None
