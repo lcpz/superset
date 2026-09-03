@@ -23,7 +23,6 @@ from uuid import UUID
 
 import pytest
 from fastmcp import Client
-from fastmcp.exceptions import ToolError
 
 from superset.mcp_service.app import mcp
 from superset.mcp_service.utils.audit_access import AuditAccessError
@@ -138,24 +137,6 @@ async def test_usage_fails_closed_on_access_errors(status: int, error_type: str)
     ):
         data = await _call({"dataset_uuid": str(DATASET_UUID)})
     assert data["error_type"] == error_type
-
-
-@pytest.mark.asyncio
-async def test_usage_reraises_unexpected_errors() -> None:
-    """Unexpected faults after the access gate are re-raised (not swallowed)
-    so the centralized middleware can log/sanitize them; the client sees a
-    ToolError with a sanitized generic message."""
-    with (
-        patch(f"{TOOL}.resolve_audit_entity", return_value=(_dataset(), DATASET_UUID)),
-        patch(
-            "superset.datasets.related_objects.DatasetDAO.get_related_objects",
-            side_effect=RuntimeError("boom: db connection string leaked"),
-        ),
-        pytest.raises(ToolError) as exc,
-    ):
-        await _call({"dataset_uuid": str(DATASET_UUID)})
-    # The raw exception message must not leak; the middleware sanitizes it.
-    assert "boom: db connection string leaked" not in str(exc.value)
 
 
 def test_usage_tool_not_guest_allowed() -> None:

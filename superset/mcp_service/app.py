@@ -177,10 +177,19 @@ Dataset Management:
 - list_datasets: List datasets with advanced filters (1-based pagination)
 - get_dataset_info: Get detailed dataset information by ID (includes columns/metrics)
 - get_dataset_usage: List charts and dashboards depending on a dataset by UUID (reverse lineage, paginated, with completeness markers)
+- export_dataset_migration_evidence: One bounded, SHA-256 digested evidence page (inventory, before/after snapshots by version_uuid, activity, report/query executions, coverage) for retiring a dataset
 - create_dataset: Register a physical table as a dataset against an existing DB connection (requires write access)
 - create_virtual_dataset: Save a SQL query as a virtual dataset for charting (requires write access)
 - update_dataset_metric: Update a saved metric on a dataset — expression, name, verbose_name, format (requires dataset ownership)
 - query_dataset: Query a dataset using its semantic layer (saved metrics, dimensions, filters) without needing a saved chart
+
+Version History & Audit (by UUID; same entries as the REST /versions/ and /activity/ endpoints):
+- get_chart_versions: Paginated chart version list, or one snapshot via version_uuid (never positional version_number)
+- get_dashboard_versions: Paginated dashboard version list, or one snapshot via version_uuid
+- get_dataset_versions: Paginated dataset version list, or one snapshot via version_uuid
+- get_chart_activity: Who changed a chart and when, with include=self|related|all, retention and completeness markers
+- get_dashboard_activity: Who changed a dashboard and when, with include=self|related|all, retention and completeness markers
+- get_dataset_activity: Who changed a dataset and when (own edits only; no related layer), retention and completeness markers
 
 Semantic Layer:
 - list_metrics: Discover metrics across built-in datasets and external semantic views (1-based pagination)
@@ -819,6 +828,7 @@ from superset.mcp_service.database.tool import (  # noqa: F401, E402
 from superset.mcp_service.dataset.tool import (  # noqa: F401, E402
     create_dataset,
     create_virtual_dataset,
+    export_dataset_migration_evidence,
     get_dataset_info,
     get_dataset_usage,
     list_datasets,
@@ -886,6 +896,14 @@ from superset.mcp_service.theme.tool import (  # noqa: F401, E402
 from superset.mcp_service.user.tool import (  # noqa: F401, E402
     get_user_info,
     list_users,
+)
+from superset.mcp_service.versioning.tool import (  # noqa: F401, E402
+    get_chart_activity,
+    get_chart_versions,
+    get_dashboard_activity,
+    get_dashboard_versions,
+    get_dataset_activity,
+    get_dataset_versions,
 )
 
 #: Tool names exempt from the mcp_auth_hook protection check. Adding a tool

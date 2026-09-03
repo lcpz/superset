@@ -374,22 +374,6 @@ def _run_prune_pass(
         )
         tx_ids = window.prunable
 
-        # Capture the most recent ``issued_at`` among the transactions about to
-        # be deleted, before the DELETE removes them. This is the durable
-        # high-water mark of destruction: history at or before it is no longer
-        # guaranteed complete even if the retention window is later widened.
-        pruned_high_water: datetime | None = None
-        for chunk in _chunked(tx_ids, _TX_ID_CHUNK_SIZE):
-            max_issued = conn.execute(
-                sa.select(sa.func.max(tables.transaction.c.issued_at)).where(
-                    tables.transaction.c.id.in_(chunk)
-                )
-            ).scalar()
-            if max_issued is not None and (
-                pruned_high_water is None or max_issued > pruned_high_water
-            ):
-                pruned_high_water = max_issued
-
         parent_rows = _delete_for_transactions(conn, tables.parent, tx_ids)
         child_rows = _delete_for_transactions(conn, tables.child, tx_ids)
         m2m_rows = (
@@ -421,7 +405,6 @@ def _run_prune_pass(
         "pruned_parent_shadows": parent_rows,
         "pruned_child_shadows": child_rows,
         "pruned_m2m_shadows": m2m_rows,
-        "pruned_high_water": pruned_high_water,
     }
 
 
@@ -524,22 +507,14 @@ def _prune_old_versions_impl(retention_days: int) -> dict[str, Any]:
     }
     total_retried = 0
     after_id = 0
-    high_water: datetime | None = None
     while True:
         pass_stats, retries = _run_pass_with_retry(cutoff, tables, after_id)
         total_retried += retries
         for key in totals:
             totals[key] += pass_stats.get(key, 0)
-        pass_high_water = pass_stats.get("pruned_high_water")
-        if pass_high_water is not None and (
-            high_water is None or pass_high_water > high_water
-        ):
-            high_water = pass_high_water
         if pass_stats.get("candidate_count", 0) < _MAX_PRUNE_BATCH:
             break
         after_id = pass_stats.get("max_candidate_id", after_id)
-
-    _advance_prune_watermark(high_water)
 
     stats: dict[str, Any] = {"cutoff": cutoff.isoformat(), **totals}
     if total_retried:
@@ -549,55 +524,6 @@ def _prune_old_versions_impl(retention_days: int) -> dict[str, Any]:
     )
     logger.info("version_history_retention: %s", stats)
     return stats
-
-
-def _advance_prune_watermark(high_water: datetime | None) -> None:
-    """Persist the durable prune high-water mark, only ever moving it forward.
-
-    *high_water* is the most recent ``issued_at`` deleted in this run (``None``
-    when nothing was pruned). Stored as an ISO-8601 naive-UTC string under
-    :attr:`SharedKey.VERSION_HISTORY_PRUNE_WATERMARK`. Because pruning is
-    irreversible, the watermark is monotonic: a run with an older (or absent)
-    high-water mark never regresses the stored value.
-
-    The write runs on ``db.session`` (via ``upsert_shared_value``) *after* the
-    SERIALIZABLE prune passes have committed, so it is not atomic with the
-    DELETE — ``KeyValueDAO`` has no way to join the raw prune connection. If the
-    process dies in that window the watermark under-reports by one run, but the
-    effect is self-healing and never unsafe: the next successful prune
-    recomputes the high-water mark from the transactions still older than the
-    cutoff and advances it, and until then ``retention_disclosure``'s
-    current-policy cutoff is the later (dominant) boundary anyway, so the
-    disclosed floor stays conservative rather than falsely claiming
-    completeness. Persistence failures are likewise logged and swallowed —
-    losing a watermark update must never fail the prune itself, whose primary
-    job is reclaiming disk.
-    """
-    if high_water is None:
-        return
-    # pylint: disable=import-outside-toplevel
-    from superset.key_value.shared_entries import get_shared_value, upsert_shared_value
-    from superset.key_value.types import SharedKey
-
-    try:
-        existing = get_shared_value(SharedKey.VERSION_HISTORY_PRUNE_WATERMARK)
-        existing_dt: datetime | None = None
-        if existing:
-            try:
-                existing_dt = datetime.fromisoformat(str(existing))
-            except ValueError:
-                # A corrupt/legacy value should not pin the watermark forever;
-                # overwrite it with the current, well-formed high-water mark.
-                existing_dt = None
-        if existing_dt is not None and existing_dt >= high_water:
-            return  # Never regress a monotonic watermark.
-        upsert_shared_value(
-            SharedKey.VERSION_HISTORY_PRUNE_WATERMARK, high_water.isoformat()
-        )
-    except Exception:  # pylint: disable=broad-except
-        logger.exception(
-            "version_history_retention: failed to persist prune watermark",
-        )
 
 
 @celery_app.task(name="version_history.prune_old_versions")
