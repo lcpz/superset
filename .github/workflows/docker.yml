@@ -101,10 +101,13 @@ jobs:
   docker-build:
     name: docker-build
     needs: [setup_matrix, changes]
+    # Push builds publish to Docker Hub as apache/superset, which only the
+    # upstream repo has credentials for; forks only build on pull_request.
     if: >-
-      needs.changes.outputs.python == 'true' ||
-      needs.changes.outputs.frontend == 'true' ||
-      needs.changes.outputs.docker == 'true'
+      (github.event_name != 'push' || github.repository == 'apache/superset') &&
+      (needs.changes.outputs.python == 'true' ||
+       needs.changes.outputs.frontend == 'true' ||
+       needs.changes.outputs.docker == 'true')
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
