@@ -453,10 +453,24 @@ def main(argv: list[str] | None = None) -> int:
     automation_id = os.environ.get("DEVIN_AUTOMATION_ID", "")
     now = datetime.now(tz=timezone.utc)
 
-    sessions = devin.sessions(automation_id or None)
-    automation = devin.automation(automation_id)
+    devin_error = ""
+    try:
+        sessions = devin.sessions(automation_id or None)
+        automation = devin.automation(automation_id)
+    except (RuntimeError, urllib.error.URLError) as exc:
+        # Report from GitHub evidence only; the health line explains the gap.
+        print(f"::warning::Devin API unavailable: {exc}", file=sys.stderr)
+        devin_error = str(exc)
+        devin.enabled = False
+        sessions, automation = [], None
     rows = build_rows(gh, sessions, now)
     health, notes = automation_health(automation, rows, devin.enabled)
+    if devin_error:
+        health = "unknown (Devin API error)"
+        notes.append(
+            f"Devin API: {_md_cell(devin_error.split(' -> ')[-1])} "
+            "(check the service user's ViewOrgSessions permission)"
+        )
     report = render(repo, rows, health, notes, sessions, now)
 
     if args.output:
