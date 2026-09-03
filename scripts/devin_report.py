@@ -277,7 +277,7 @@ def _classify(row: IssueRow, now: datetime, sessions_known: bool = True) -> str:
             return "failed-ci"
         return "done"
     if LABEL_IN_PROGRESS in labels:
-        return _classify_in_progress(row, session_states, now)
+        return _classify_in_progress(row, session_states, now, sessions_known)
     if LABEL_READY in labels:
         return _classify_ready(row, now, sessions_known)
     if row.closed:
@@ -296,10 +296,12 @@ def _classify_ready(row: IssueRow, now: datetime, sessions_known: bool) -> str:
 
 
 def _classify_in_progress(
-    row: IssueRow, session_states: set[Any], now: datetime
+    row: IssueRow, session_states: set[Any], now: datetime, sessions_known: bool
 ) -> str:
     if session_states & {"working", "resumed"}:
         return "in-progress"
+    if not sessions_known:
+        return "in-progress (session data unavailable)"
     stale = row.ready_at is not None and now - row.ready_at > STALE_IN_PROGRESS
     if session_states & {"blocked", "expired"} or stale:
         return "stalled"
@@ -375,13 +377,9 @@ def automation_health(
     notes: list[str] = []
     if not devin_enabled:
         return "unknown (DEVIN_API_KEY not configured)", notes
-    if automation is None:
-        # Personal (run_as creator) automations are invisible to service users;
-        # fall back to session evidence alone.
-        notes.append("automation record not readable; health inferred from sessions")
-    elif not automation.get("enabled"):
+    if automation is not None and not automation.get("enabled"):
         return "DISABLED", notes
-    elif last := automation.get("last_invocation") or {}:
+    if automation and (last := automation.get("last_invocation") or {}):
         fired = datetime.fromtimestamp(last["fired_at"], tz=timezone.utc)
         notes.append(f"last invocation: {last['status']} at {fired.isoformat()}")
     missed = [r for r in rows if r.status == "dispatch-missed"]
@@ -390,6 +388,10 @@ def automation_health(
             "dispatch missed for: " + ", ".join(f"#{r.number}" for r in missed)
         )
         return "DEGRADED", notes
+    if automation is None:
+        # Personal (run_as creator) automations are invisible to service users.
+        notes.append("no dispatch missed, but enabled state could not be verified")
+        return "unknown (automation record not readable)", notes
     return "healthy", notes
 
 
