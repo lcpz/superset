@@ -27,36 +27,36 @@ fetched no status must be inferred from its absence (``dispatch-missed`` /
 from __future__ import annotations
 
 import importlib.util
+import sys
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-_SCRIPT_PATH = (
-    Path(__file__).resolve().parents[3] / "scripts" / "devin_report.py"
-)
+_SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "devin_report.py"
 _spec = importlib.util.spec_from_file_location("devin_report", _SCRIPT_PATH)
 assert _spec is not None, f"Could not load {_SCRIPT_PATH}"
 assert _spec.loader is not None, f"No loader on spec for {_SCRIPT_PATH}"
 devin_report = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = devin_report
 _spec.loader.exec_module(devin_report)
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
 
 def _row(**kwargs: object) -> object:
-    defaults = dict(
-        number=1,
-        title="t",
-        url="https://github.com/o/r/issues/1",
-        labels=[],
-        closed=False,
-        status="",
-        ready_at=None,
-    )
+    defaults: dict[str, object] = {
+        "number": 1,
+        "title": "t",
+        "url": "https://github.com/o/r/issues/1",
+        "labels": [],
+        "closed": False,
+        "status": "",
+        "ready_at": None,
+    }
     defaults.update(kwargs)
-    return devin_report.IssueRow(**defaults)  # type: ignore[arg-type]
+    return devin_report.IssueRow(**defaults)
 
 
 # --- _classify_ready ------------------------------------------------------
@@ -140,7 +140,7 @@ def test_health_degraded_even_without_record() -> None:
 class _StubGitHub:
     repo = "o/r"
 
-    def issues(self, since: datetime) -> list[dict]:
+    def issues(self, since: datetime) -> list[dict[str, object]]:
         return []
 
 
@@ -149,12 +149,12 @@ class _StubDevin:
         self.enabled = enabled
         self._sessions_exc = sessions_exc
 
-    def sessions(self, automation_id: str | None) -> list[dict]:
+    def sessions(self, automation_id: str | None) -> list[dict[str, object]]:
         if self._sessions_exc is not None:
             raise self._sessions_exc
         return []
 
-    def automation(self, automation_id: str) -> dict | None:
+    def automation(self, automation_id: str) -> dict[str, object] | None:
         return {"enabled": True}
 
 
@@ -172,9 +172,7 @@ def test_main_degrades_on_session_failure(
     exc: Exception,
     expect_permission_hint: bool,
 ) -> None:
-    monkeypatch.setattr(
-        devin_report, "GitHubClient", lambda *a, **k: _StubGitHub()
-    )
+    monkeypatch.setattr(devin_report, "GitHubClient", lambda *a, **k: _StubGitHub())
     monkeypatch.setattr(
         devin_report,
         "DevinClient",
@@ -191,9 +189,7 @@ def test_main_publishes_board_when_devin_healthy(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(
-        devin_report, "GitHubClient", lambda *a, **k: _StubGitHub()
-    )
+    monkeypatch.setattr(devin_report, "GitHubClient", lambda *a, **k: _StubGitHub())
     monkeypatch.setattr(
         devin_report,
         "DevinClient",
