@@ -182,6 +182,14 @@ Dataset Management:
 - update_dataset_metric: Update a saved metric on a dataset — expression, name, verbose_name, format (requires dataset ownership)
 - query_dataset: Query a dataset using its semantic layer (saved metrics, dimensions, filters) without needing a saved chart
 
+Version History & Audit (by UUID; same entries as the REST /versions/ and /activity/ endpoints):
+- get_chart_versions: Paginated chart version list, or one snapshot via version_uuid (never positional version_number)
+- get_dashboard_versions: Paginated dashboard version list, or one snapshot via version_uuid
+- get_dataset_versions: Paginated dataset version list, or one snapshot via version_uuid
+- get_chart_activity: Who changed a chart and when, with include=self|related|all, retention and completeness markers
+- get_dashboard_activity: Who changed a dashboard and when, with include=self|related|all, retention and completeness markers
+- get_dataset_activity: Who changed a dataset and when (own edits only; no related layer), retention and completeness markers
+
 Semantic Layer:
 - list_metrics: Discover metrics across built-in datasets and external semantic views (1-based pagination)
 - get_table: Query a data source (built-in dataset or external semantic view) by metric/dimension names
@@ -886,6 +894,14 @@ from superset.mcp_service.theme.tool import (  # noqa: F401, E402
 from superset.mcp_service.user.tool import (  # noqa: F401, E402
     get_user_info,
     list_users,
+)
+from superset.mcp_service.versioning.tool import (  # noqa: F401, E402
+    get_chart_activity,
+    get_chart_versions,
+    get_dashboard_activity,
+    get_dashboard_versions,
+    get_dataset_activity,
+    get_dataset_versions,
 )
 
 #: Tool names exempt from the mcp_auth_hook protection check. Adding a tool
