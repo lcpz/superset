@@ -123,8 +123,8 @@ as an artifact and, when `DEVIN_OBS_DATABASE_URL` is set, upserts it into the
 **Findings.** For every open, non-draft PR the collector derives
 `ci-failed-unattended`, `review-unaddressed` and `changes-requested-unaddressed`
 when the condition is older than `DEVIN_OBS_GRACE_HOURS` (default 2) and no
-Devin commit, comment or session has touched the PR since. These are exactly
-the cases the event-driven automations ("pick up `devin:ready`", "address PR
+Devin commit, non-dispatch progress comment or session has touched the PR since.
+These are exactly the cases the event-driven automations ("pick up `devin:ready`", "address PR
 feedback & failed CI") may have missed (dropped webhook, rate limit, session
 failure); anything they already handle produces no finding.
 

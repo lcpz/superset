@@ -311,6 +311,7 @@ class PullRow:
     head_sha: str
     last_commit_at: str | None
     failed_at: str | None
+    last_devin_comment_at: str | None
     checks: str  # success | failure | pending | none
     failed_checks: list[str]
     approved: bool
@@ -466,6 +467,16 @@ def collect_pull(gh: GitHubClient, pull: JsonDict) -> tuple[PullRow, list[CheckR
     last_commit_at = max(
         (c["commit"]["committer"]["date"] for c in commits), default=None
     )
+    issue_comments = gh.issue_comments(number)
+    last_devin_comment_at = max(
+        (
+            c["created_at"]
+            for c in issue_comments
+            if (c.get("user") or {}).get("login") == "devin-ai-integration[bot]"
+            and DISPATCH_MARKER not in (c.get("body") or "")
+        ),
+        default=None,
+    )
     failed_at_values = [
         completed_at
         for r in runs
@@ -488,6 +499,7 @@ def collect_pull(gh: GitHubClient, pull: JsonDict) -> tuple[PullRow, list[CheckR
         head_sha=sha,
         last_commit_at=last_commit_at,
         failed_at=max(failed_at_values, default=None),
+        last_devin_comment_at=last_devin_comment_at,
         checks=checks,
         failed_checks=failed,
         approved="APPROVED" in states and "CHANGES_REQUESTED" not in states,
@@ -496,7 +508,7 @@ def collect_pull(gh: GitHubClient, pull: JsonDict) -> tuple[PullRow, list[CheckR
         review_threads=len(threads),
         unresolved_threads=len(unresolved),
         oldest_unresolved_at=oldest,
-        dispatches=_dispatch_markers(gh.issue_comments(number)),
+        dispatches=_dispatch_markers(issue_comments),
     )
     return row, check_rows
 
@@ -588,6 +600,13 @@ def _session_active_since(
     return False
 
 
+def _activity_since(sessions: list[SessionRow], pr: PullRow, since: datetime) -> bool:
+    comment_at = _parse_ts(pr.last_devin_comment_at)
+    return _session_active_since(sessions, pr, since) or (
+        comment_at is not None and comment_at >= since
+    )
+
+
 def _add_finding(
     findings: list[Finding],
     pr: PullRow,
@@ -595,8 +614,23 @@ def _add_finding(
     anchor: str,
     detail: str,
     since: str | None,
+    now: datetime,
 ) -> None:
     key = _finding_key(kind, pr, anchor)
+    dispatched = False
+    for marker in pr.dispatches:
+        if marker.get("key") != key:
+            continue
+        if marker.get("session_id"):
+            dispatched = True
+            break
+        try:
+            created_at = _parse_ts(marker.get("created_at"))
+        except ValueError:
+            continue
+        if created_at and created_at >= now - UNATTENDED_GRACE:
+            dispatched = True
+            break
     findings.append(
         Finding(
             key=key,
@@ -606,7 +640,7 @@ def _add_finding(
             branch=pr.branch,
             detail=detail,
             since=since,
-            dispatched=key in {d.get("key") for d in pr.dispatches},
+            dispatched=dispatched,
         )
     )
 
@@ -616,14 +650,14 @@ def derive_findings(snapshot: Snapshot, now: datetime) -> list[Finding]:
     for pr in snapshot.pulls:
         if pr.state != "open" or pr.draft:
             continue
-        add = functools.partial(_add_finding, findings, pr)
+        add = functools.partial(_add_finding, findings, pr, now=now)
         last_commit = _parse_ts(pr.last_commit_at) or _parse_ts(pr.created_at) or now
         quiet_since = now - UNATTENDED_GRACE
         failed_at = _parse_ts(pr.failed_at)
         ci_since = max(last_commit, failed_at) if failed_at else last_commit
 
         if pr.checks == "failure" and ci_since <= quiet_since:
-            if not _session_active_since(snapshot.sessions, pr, ci_since):
+            if not _activity_since(snapshot.sessions, pr, ci_since):
                 add(
                     "ci-failed-unattended",
                     pr.head_sha,
@@ -636,7 +670,7 @@ def derive_findings(snapshot: Snapshot, now: datetime) -> list[Finding]:
             and oldest
             and oldest <= quiet_since
             and last_commit < oldest
-            and not _session_active_since(snapshot.sessions, pr, oldest)
+            and not _activity_since(snapshot.sessions, pr, oldest)
         ):
             add(
                 "review-unaddressed",
@@ -650,7 +684,7 @@ def derive_findings(snapshot: Snapshot, now: datetime) -> list[Finding]:
             and review_at
             and review_at <= quiet_since
             and last_commit < review_at
-            and not _session_active_since(snapshot.sessions, pr, review_at)
+            and not _activity_since(snapshot.sessions, pr, review_at)
         ):
             add(
                 "changes-requested-unaddressed",
@@ -796,7 +830,8 @@ CREATE TABLE IF NOT EXISTS devin_obs.pull_requests (
   number INT PRIMARY KEY, title TEXT, url TEXT, author TEXT, branch TEXT,
   state TEXT, draft BOOLEAN, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ,
   merged_at TIMESTAMPTZ, head_sha TEXT, last_commit_at TIMESTAMPTZ,
-  failed_at TIMESTAMPTZ, checks TEXT, failed_checks TEXT[],
+  failed_at TIMESTAMPTZ, last_devin_comment_at TIMESTAMPTZ,
+  checks TEXT, failed_checks TEXT[],
   approved BOOLEAN, changes_requested BOOLEAN,
   last_human_review_at TIMESTAMPTZ, review_threads INT, unresolved_threads INT,
   oldest_unresolved_at TIMESTAMPTZ, remediation TEXT, last_seen_at TIMESTAMPTZ
@@ -885,7 +920,7 @@ def load_snapshot(database_url: str, snapshot: Snapshot, source: str) -> None:
                 rem = remediation(pr)
                 cur.execute(
                     """INSERT INTO devin_obs.pull_requests VALUES
-                       (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (number) DO UPDATE SET
                          title=EXCLUDED.title, state=EXCLUDED.state,
                          draft=EXCLUDED.draft,
@@ -893,6 +928,7 @@ def load_snapshot(database_url: str, snapshot: Snapshot, source: str) -> None:
                          head_sha=EXCLUDED.head_sha,
                          last_commit_at=EXCLUDED.last_commit_at,
                          failed_at=EXCLUDED.failed_at,
+                         last_devin_comment_at=EXCLUDED.last_devin_comment_at,
                          checks=EXCLUDED.checks, failed_checks=EXCLUDED.failed_checks,
                          approved=EXCLUDED.approved,
                          changes_requested=EXCLUDED.changes_requested,
@@ -916,6 +952,7 @@ def load_snapshot(database_url: str, snapshot: Snapshot, source: str) -> None:
                         pr.head_sha,
                         pr.last_commit_at,
                         pr.failed_at,
+                        pr.last_devin_comment_at,
                         pr.checks,
                         pr.failed_checks,
                         pr.approved,

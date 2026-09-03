@@ -55,6 +55,7 @@ def _pr(**overrides: Any) -> Any:
         "head_sha": "abc123",
         "last_commit_at": obs._iso(NOW - timedelta(hours=5)),
         "failed_at": None,
+        "last_devin_comment_at": None,
         "checks": "success",
         "failed_checks": [],
         "approved": False,
@@ -118,7 +119,7 @@ def test_failed_ci_without_session_is_a_finding_once() -> None:
     assert findings[0].pr_number == 42
     assert not findings[0].dispatched
 
-    pr.dispatches = [{"key": findings[0].key}]
+    pr.dispatches = [{"key": findings[0].key, "session_id": "s1"}]
     again = obs.derive_findings(_snapshot([pr]), NOW)
     assert again[0].dispatched
 
@@ -304,6 +305,9 @@ def test_deleted_review_author_is_counted_as_human(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeGitHub:
+        def __init__(self) -> None:
+            self.comments_calls = 0
+
         def check_runs(self, sha: str) -> list[dict[str, Any]]:
             return []
 
@@ -323,10 +327,20 @@ def test_deleted_review_author_is_counted_as_human(
             return []
 
         def issue_comments(self, number: int) -> list[dict[str, Any]]:
-            return []
+            self.comments_calls += 1
+            return [
+                {
+                    "body": f"<!-- {obs.DISPATCH_MARKER} "
+                    f"{obs.json.dumps({'key': 'marker'})} -->",
+                    "created_at": "2026-09-02T00:00:00+00:00",
+                    "html_url": "https://github.com/c/1",
+                    "user": {"login": "devin-ai-integration[bot]"},
+                }
+            ]
 
+    github = FakeGitHub()
     row, _ = obs.collect_pull(
-        FakeGitHub(),
+        github,
         {
             "number": 42,
             "title": "feat",
@@ -341,6 +355,8 @@ def test_deleted_review_author_is_counted_as_human(
         },
     )
     assert row.unresolved_threads == 1
+    assert row.last_devin_comment_at is None
+    assert github.comments_calls == 1
 
 
 def test_dispatch_failed_session_clears_marker_for_retry(
@@ -419,3 +435,40 @@ def test_one_session_per_pr_includes_all_signals(
     assert session_body is not None
     assert "review-unaddressed" in session_body["prompt"]
     assert "changes-requested-unaddressed" in session_body["prompt"]
+
+
+def test_provisional_dispatch_marker_expires_but_completed_marker_does_not() -> None:
+    pr = _pr(checks="failure", failed_checks=["python-lint"])
+    finding = obs.derive_findings(_snapshot([pr]), NOW)[0]
+
+    pr.dispatches = [
+        {
+            "key": finding.key,
+            "created_at": obs._iso(NOW - timedelta(minutes=10)),
+        }
+    ]
+    assert obs.derive_findings(_snapshot([pr]), NOW)[0].dispatched
+
+    pr.dispatches[0]["created_at"] = obs._iso(NOW - timedelta(hours=5))
+    assert not obs.derive_findings(_snapshot([pr]), NOW)[0].dispatched
+
+    pr.dispatches[0] = {"key": finding.key, "session_id": "session-1"}
+    assert obs.derive_findings(_snapshot([pr]), NOW)[0].dispatched
+
+
+def test_recent_devin_progress_comment_suppresses_finding() -> None:
+    recent = _pr(
+        checks="failure",
+        failed_checks=["python-lint"],
+        last_devin_comment_at=obs._iso(NOW - timedelta(hours=1)),
+    )
+    assert obs.derive_findings(_snapshot([recent]), NOW) == []
+
+    old = _pr(
+        checks="failure",
+        failed_checks=["python-lint"],
+        last_devin_comment_at=obs._iso(NOW - timedelta(hours=6)),
+    )
+    assert [f.kind for f in obs.derive_findings(_snapshot([old]), NOW)] == [
+        "ci-failed-unattended"
+    ]
