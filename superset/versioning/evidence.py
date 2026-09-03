@@ -412,6 +412,7 @@ def build_dataset_migration_evidence(
                 inventory["charts"]["truncated"]
                 or inventory["dashboards"]["truncated"]
                 or report_executions["truncated"]
+                or not query_executions["authorized"]
                 or query_executions["truncated"]
                 or any(
                     a["versions_in_window"]["truncated"] or a["activity"]["truncated"]

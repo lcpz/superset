@@ -328,6 +328,7 @@ def test_query_evidence_requires_query_read_capability() -> None:
     assert evidence["query_executions"]["authorized"] is False
     assert evidence["query_executions"]["result"] == []
     assert evidence["query_executions"]["count"] == 0
+    assert evidence["coverage"]["complete"] is False
 
 
 @pytest.mark.usefixtures("evidence_env")
