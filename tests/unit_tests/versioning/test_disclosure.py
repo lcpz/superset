@@ -210,6 +210,63 @@ def test_retention_disclosure_pruning_on_when_task_scheduled(app: Flask) -> None
     assert env["pruning_enabled"] is True
 
 
+def test_retention_disclosure_pruning_off_when_module_missing_from_imports(
+    app: Flask,
+) -> None:
+    """Scheduled but its module is absent from an explicitly-configured
+    ``imports``: a fired task raises Celery ``NotRegistered`` and prunes
+    nothing, so ``pruning_enabled`` must be ``False`` (mirrors the initializer
+    warning)."""
+
+    class _NoImportCeleryConfig:
+        imports = ("superset.tasks.deletion_retention",)
+        beat_schedule = {
+            "version_history.prune_old_versions": {
+                "task": "version_history.prune_old_versions",
+            },
+        }
+
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": _NoImportCeleryConfig,
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure()
+    assert env["version_history_days"] == 30
+    assert env["pruning_enabled"] is False
+
+
+def test_retention_disclosure_pruning_on_when_module_in_imports(app: Flask) -> None:
+    """Scheduled and its module is listed in an explicit ``imports``: pruning
+    is genuinely active."""
+
+    class _FullCeleryConfig:
+        imports = ("superset.tasks.version_history_retention",)
+        beat_schedule = {
+            "version_history.prune_old_versions": {
+                "task": "version_history.prune_old_versions",
+            },
+        }
+
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": _FullCeleryConfig,
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure()
+    assert env["pruning_enabled"] is True
+
+
 def test_retention_disclosure_pruning_off_for_dotted_config(app: Flask) -> None:
     """A dotted ``CELERY_CONFIG`` is resolved by Celery's loader, not here, so
     the schedule is not inspectable. We report ``pruning_enabled=False`` rather

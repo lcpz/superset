@@ -51,21 +51,31 @@ DEFAULT_PAGE_SIZE: int = 100
 #: ``CeleryConfig.beat_schedule`` entry in ``superset/config.py``.
 _RETENTION_TASK_NAME: str = "version_history.prune_old_versions"
 
+#: Module that must be imported by Celery workers for the prune task to be
+#: registered. Must stay in sync with ``AppInitializer._RETENTION_TASK_MODULE``
+#: and the default ``CeleryConfig.imports`` entry in ``superset/config.py``.
+_RETENTION_TASK_MODULE: str = "superset.tasks.version_history_retention"
+
 
 def _prune_task_scheduled() -> bool:
     """Whether the version-history prune task is actually scheduled to run.
 
     A positive ``SUPERSET_VERSION_HISTORY_RETENTION_DAYS`` only expresses a
-    *policy*; pruning only happens when Celery is configured and its
+    *policy*; pruning only happens when Celery is configured, its
     ``beat_schedule`` includes the ``version_history.prune_old_versions``
-    task. Mirrors the detection in
-    ``AppInitializer._warn_if_retention_beat_missing``. When
-    ``CELERY_CONFIG`` is a dotted import string it is resolved by Celery's
-    loader rather than here; resolving operator code solely to answer this
-    question would duplicate the loader and risk import side effects (the
-    same reason ``AppInitializer._warn_if_retention_beat_missing`` skips it),
-    so we conservatively report the schedule as unknown (``False``) rather
-    than claiming a prune that may never fire.
+    task, and its workers actually register that task. Mirrors the detection
+    in ``AppInitializer._warn_if_retention_beat_missing``: a scheduled entry
+    whose module is absent from an explicitly-configured ``imports`` fires
+    with Celery ``NotRegistered`` and prunes nothing, so we report ``False``
+    in that case too. An absent ``imports`` setting is not diagnosed (Celery
+    may register tasks via ``include``, autodiscovery, or worker-startup
+    imports), matching the initializer. When ``CELERY_CONFIG`` is a dotted
+    import string it is resolved by Celery's loader rather than here;
+    resolving operator code solely to answer this question would duplicate
+    the loader and risk import side effects (the same reason
+    ``AppInitializer._warn_if_retention_beat_missing`` skips it), so we
+    conservatively report the schedule as unknown (``False``) rather than
+    claiming a prune that may never fire.
     """
     celery_config: Any = current_app.config.get("CELERY_CONFIG")
     if celery_config is None:
@@ -89,7 +99,27 @@ def _prune_task_scheduled() -> bool:
         entry.get("task") for entry in beat_schedule.values() if isinstance(entry, dict)
     }
     scheduled_tasks.update(beat_schedule)
-    return _RETENTION_TASK_NAME in scheduled_tasks
+    if _RETENTION_TASK_NAME not in scheduled_tasks:
+        return False
+    # A scheduled task whose module is missing from an explicitly-configured
+    # ``imports`` fails with Celery ``NotRegistered`` when it fires, so it
+    # never actually prunes. A ``str`` is iterable, so guard it explicitly:
+    # ``imports = "superset.foo"`` would otherwise read as a sequence of
+    # characters. An absent ``imports`` is left undiagnosed (see docstring).
+    celery_imports: Any = (
+        celery_config.get("imports")
+        if isinstance(celery_config, dict)
+        else getattr(celery_config, "imports", None)
+    )
+    if celery_imports is not None:
+        imported_modules: frozenset[str] = frozenset(
+            celery_imports
+            if isinstance(celery_imports, (list, tuple, set, frozenset))
+            else ()
+        )
+        if _RETENTION_TASK_MODULE not in imported_modules:
+            return False
+    return True
 
 
 def bounded_page_size(page_size: int | None, default: int = DEFAULT_PAGE_SIZE) -> int:
