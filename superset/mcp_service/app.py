@@ -176,6 +176,7 @@ Alerts & Reports:
 Dataset Management:
 - list_datasets: List datasets with advanced filters (1-based pagination)
 - get_dataset_info: Get detailed dataset information by ID (includes columns/metrics)
+- get_dataset_usage: List charts and dashboards depending on a dataset by UUID (reverse lineage, paginated, with completeness markers)
 - create_dataset: Register a physical table as a dataset against an existing DB connection (requires write access)
 - create_virtual_dataset: Save a SQL query as a virtual dataset for charting (requires write access)
 - update_dataset_metric: Update a saved metric on a dataset — expression, name, verbose_name, format (requires dataset ownership)
@@ -819,6 +820,7 @@ from superset.mcp_service.dataset.tool import (  # noqa: F401, E402
     create_dataset,
     create_virtual_dataset,
     get_dataset_info,
+    get_dataset_usage,
     list_datasets,
     query_dataset,
     update_dataset_metric,
