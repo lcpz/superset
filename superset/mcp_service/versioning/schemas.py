@@ -124,7 +124,7 @@ class AssetVersionsResponse(BaseModel):
 
     asset: AssetRef
     result: list[dict[str, Any]] = Field(
-        ..., description="VersionListItemSchema rows (newest first as REST)"
+        ..., description="VersionListItemSchema rows (oldest first, as REST)"
     )
     count: int = Field(..., description="Total versions currently retained")
     truncated: bool = Field(..., description="True when more pages exist")
