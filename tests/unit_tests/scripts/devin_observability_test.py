@@ -16,6 +16,7 @@
 # under the License.
 import importlib.util
 import sys
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -55,6 +56,7 @@ def _pr(**overrides: Any) -> Any:
         "head_sha": "abc123",
         "last_commit_at": obs._iso(NOW - timedelta(hours=5)),
         "failed_at": None,
+        "last_devin_comment_at": None,
         "checks": "success",
         "failed_checks": [],
         "approved": False,
@@ -118,7 +120,7 @@ def test_failed_ci_without_session_is_a_finding_once() -> None:
     assert findings[0].pr_number == 42
     assert not findings[0].dispatched
 
-    pr.dispatches = [{"key": findings[0].key}]
+    pr.dispatches = [{"key": findings[0].key, "session_id": "s1"}]
     again = obs.derive_findings(_snapshot([pr]), NOW)
     assert again[0].dispatched
 
@@ -304,6 +306,9 @@ def test_deleted_review_author_is_counted_as_human(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeGitHub:
+        def __init__(self) -> None:
+            self.comments_calls = 0
+
         def check_runs(self, sha: str) -> list[dict[str, Any]]:
             return []
 
@@ -323,10 +328,20 @@ def test_deleted_review_author_is_counted_as_human(
             return []
 
         def issue_comments(self, number: int) -> list[dict[str, Any]]:
-            return []
+            self.comments_calls += 1
+            return [
+                {
+                    "body": f"<!-- {obs.DISPATCH_MARKER} "
+                    f"{obs.json.dumps({'key': 'marker'})} -->",
+                    "created_at": "2026-09-02T00:00:00+00:00",
+                    "html_url": "https://github.com/c/1",
+                    "user": {"login": "devin-ai-integration[bot]"},
+                }
+            ]
 
+    github = FakeGitHub()
     row, _ = obs.collect_pull(
-        FakeGitHub(),
+        github,
         {
             "number": 42,
             "title": "feat",
@@ -341,6 +356,8 @@ def test_deleted_review_author_is_counted_as_human(
         },
     )
     assert row.unresolved_threads == 1
+    assert row.last_devin_comment_at is None
+    assert github.comments_calls == 1
 
 
 def test_dispatch_failed_session_clears_marker_for_retry(
@@ -419,3 +436,112 @@ def test_one_session_per_pr_includes_all_signals(
     assert session_body is not None
     assert "review-unaddressed" in session_body["prompt"]
     assert "changes-requested-unaddressed" in session_body["prompt"]
+
+
+def test_provisional_dispatch_marker_expires_but_completed_marker_does_not() -> None:
+    pr = _pr(checks="failure", failed_checks=["python-lint"])
+    finding = obs.derive_findings(_snapshot([pr]), NOW)[0]
+
+    pr.dispatches = [
+        {
+            "key": finding.key,
+            "created_at": obs._iso(NOW - timedelta(minutes=10)),
+        }
+    ]
+    assert obs.derive_findings(_snapshot([pr]), NOW)[0].dispatched
+
+    pr.dispatches[0]["created_at"] = obs._iso(NOW - timedelta(hours=5))
+    assert not obs.derive_findings(_snapshot([pr]), NOW)[0].dispatched
+
+    pr.dispatches[0] = {"key": finding.key, "session_id": "session-1"}
+    assert obs.derive_findings(_snapshot([pr]), NOW)[0].dispatched
+
+
+def test_recent_devin_progress_comment_suppresses_finding() -> None:
+    recent = _pr(
+        checks="failure",
+        failed_checks=["python-lint"],
+        last_devin_comment_at=obs._iso(NOW - timedelta(hours=1)),
+    )
+    assert obs.derive_findings(_snapshot([recent]), NOW) == []
+
+    old = _pr(
+        checks="failure",
+        failed_checks=["python-lint"],
+        last_devin_comment_at=obs._iso(NOW - timedelta(hours=6)),
+    )
+    assert [f.kind for f in obs.derive_findings(_snapshot([old]), NOW)] == [
+        "ci-failed-unattended"
+    ]
+
+
+def test_old_snapshot_defaults_new_pull_activity_fields() -> None:
+    pull = asdict(_pr())
+    pull.pop("failed_at")
+    pull.pop("last_devin_comment_at")
+    snapshot = obs._snapshot_from_json(
+        {
+            "collected_at": obs._iso(NOW),
+            "repo": "lcpz/superset",
+            "devin_api_enabled": False,
+            "pulls": [pull],
+            "check_runs": [],
+            "sessions": [],
+            "automations": [],
+            "findings": [],
+        }
+    )
+    assert snapshot.pulls[0].failed_at is None
+    assert snapshot.pulls[0].last_devin_comment_at is None
+
+
+def test_pull_request_insert_and_schema_support_activity_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.executed: list[tuple[str, Any]] = []
+
+        def __enter__(self) -> "FakeCursor":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def execute(self, query: str, params: Any = None) -> None:
+            self.executed.append((query, params))
+
+    class FakeConnection:
+        def __init__(self, cursor: FakeCursor) -> None:
+            self.cursor_instance = cursor
+
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def cursor(self) -> FakeCursor:
+            return self.cursor_instance
+
+        def close(self) -> None:
+            return None
+
+    cursor = FakeCursor()
+    connection = FakeConnection(cursor)
+    psycopg2 = ModuleType("psycopg2")
+    psycopg2.connect = lambda database_url: connection  # type: ignore[attr-defined]
+    extras = ModuleType("psycopg2.extras")
+    extras.execute_values = lambda *args: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psycopg2", psycopg2)
+    monkeypatch.setitem(sys.modules, "psycopg2.extras", extras)
+
+    obs.load_snapshot("postgresql://unused", _snapshot([_pr()]), "test")
+
+    assert "ADD COLUMN IF NOT EXISTS last_devin_comment_at TIMESTAMPTZ" in obs.DDL
+    pull_insert = next(
+        query
+        for query, _ in cursor.executed
+        if "INSERT INTO devin_obs.pull_requests" in query
+    )
+    assert "last_devin_comment_at" in pull_insert.split("VALUES", 1)[0]
