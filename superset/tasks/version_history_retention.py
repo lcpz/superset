@@ -524,13 +524,18 @@ def _prune_old_versions_impl(retention_days: int) -> dict[str, Any]:
     }
     total_retried = 0
     after_id = 0
+    high_water: datetime | None = None
     while True:
         pass_stats, retries = _run_pass_with_retry(cutoff, tables, after_id)
         total_retried += retries
         for key in totals:
             totals[key] += pass_stats.get(key, 0)
         pass_high_water = pass_stats.get("pruned_high_water")
-        _advance_prune_watermark(pass_high_water)
+        if pass_high_water is not None and (
+            high_water is None or pass_high_water > high_water
+        ):
+            high_water = pass_high_water
+        _advance_prune_watermark(high_water)
         if pass_stats.get("candidate_count", 0) < _MAX_PRUNE_BATCH:
             break
         after_id = pass_stats.get("max_candidate_id", after_id)

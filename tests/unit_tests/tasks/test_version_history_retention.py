@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import call, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -215,6 +215,41 @@ def test_watermark_persisted_per_pass_when_later_batch_fails(
         version_history_retention._prune_old_versions_impl(retention_days=30)
 
     advance.assert_called_once_with(high_water)
+
+
+def test_watermark_write_failure_recovered_by_later_pass() -> None:
+    """A later pass retries the running maximum after an earlier write fails."""
+    tables = version_history_retention.ShadowTables(
+        parent=[MagicMock()], child=[MagicMock()], m2m=None, transaction=MagicMock()
+    )
+    first_high_water = datetime(2026, 1, 5)
+    second_high_water = datetime(2026, 1, 3)
+    pass_fn: MagicMock = MagicMock(
+        side_effect=[
+            {
+                "candidate_count": version_history_retention._MAX_PRUNE_BATCH,
+                "max_candidate_id": 500,
+                "pruned_high_water": first_high_water,
+            },
+            {
+                "candidate_count": 0,
+                "pruned_high_water": second_high_water,
+            },
+        ]
+    )
+    with (
+        patch.object(
+            version_history_retention, "_resolve_shadow_tables", return_value=tables
+        ),
+        patch.object(version_history_retention, "_run_prune_pass", pass_fn),
+        patch.object(version_history_retention, "_advance_prune_watermark") as advance,
+    ):
+        version_history_retention._prune_old_versions_impl(retention_days=30)
+
+    assert advance.call_args_list == [
+        call(first_high_water),
+        call(first_high_water),
+    ]
 
 
 def test_terminal_failure_emits_failed_metric_and_swallows(stats: MagicMock) -> None:
