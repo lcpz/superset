@@ -488,10 +488,12 @@ def main(argv: list[str] | None = None) -> int:
     health, notes = automation_health(automation, rows, sessions_known)
     if devin_error:
         health = "unknown (Devin API error)"
-        notes.append(
-            f"Devin API: {_md_cell(devin_error.split(' -> ')[-1])} "
-            "(check the service user's ViewOrgSessions permission)"
-        )
+        detail = _md_cell(devin_error.split(" -> ")[-1])
+        # Only a 403 points at a missing permission; other failures (network
+        # outages, rate limits, 5xx) would make the ViewOrgSessions hint wrong.
+        if " -> 403" in devin_error:
+            detail += " (check the service user's ViewOrgSessions permission)"
+        notes.append(f"Devin API: {detail}")
     report = render(repo, rows, health, notes, sessions, now)
 
     if args.output:
