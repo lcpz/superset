@@ -46,51 +46,6 @@ T = TypeVar("T")
 MAX_PAGE_SIZE: int = 200
 DEFAULT_PAGE_SIZE: int = 100
 
-#: Beat-schedule task name of the version-history prune task. Must stay in
-#: sync with ``AppInitializer._RETENTION_TASK_NAME`` and the default
-#: ``CeleryConfig.beat_schedule`` entry in ``superset/config.py``.
-_RETENTION_TASK_NAME: str = "version_history.prune_old_versions"
-
-
-def _prune_task_scheduled() -> bool:
-    """Whether the version-history prune task is actually scheduled to run.
-
-    A positive ``SUPERSET_VERSION_HISTORY_RETENTION_DAYS`` only expresses a
-    *policy*; pruning only happens when Celery is configured and its
-    ``beat_schedule`` includes the ``version_history.prune_old_versions``
-    task. Mirrors the detection in
-    ``AppInitializer._warn_if_retention_beat_missing``. When
-    ``CELERY_CONFIG`` is a dotted import string it is resolved by Celery's
-    loader rather than here; resolving operator code solely to answer this
-    question would duplicate the loader and risk import side effects (the
-    same reason ``AppInitializer._warn_if_retention_beat_missing`` skips it),
-    so we conservatively report the schedule as unknown (``False``) rather
-    than claiming a prune that may never fire.
-    """
-    celery_config: Any = current_app.config.get("CELERY_CONFIG")
-    if celery_config is None:
-        return False  # Celery disabled entirely; the prune task never fires.
-    if isinstance(celery_config, str):
-        # Resolved by Celery's loader; the schedule is not inspectable here.
-        # Report False so pruning_enabled never over-claims (history_begins_at
-        # stays conservative regardless).
-        return False
-    beat_schedule = (
-        celery_config.get("beat_schedule")
-        if isinstance(celery_config, dict)
-        else getattr(celery_config, "beat_schedule", None)
-    )
-    if not beat_schedule:
-        return False
-    # Match on the ``task`` each entry runs, not the schedule key: an operator
-    # may register the retention task under any key. Also tolerate the default
-    # config's convention of using the task name as the key.
-    scheduled_tasks: set[Any] = {
-        entry.get("task") for entry in beat_schedule.values() if isinstance(entry, dict)
-    }
-    scheduled_tasks.update(beat_schedule)
-    return _RETENTION_TASK_NAME in scheduled_tasks
-
 
 def bounded_page_size(page_size: int | None, default: int = DEFAULT_PAGE_SIZE) -> int:
     """Clamp *page_size* into ``[1, MAX_PAGE_SIZE]`` (``None`` → *default*)."""
@@ -173,77 +128,26 @@ def retention_disclosure(now: datetime | None = None) -> dict[str, Any]:
             "history_begins_at": <ISO-8601 naive-UTC | None>,
         }
 
-    ``pruning_enabled`` reflects whether pruning is *actually active*: it
-    requires both a positive ``SUPERSET_VERSION_HISTORY_RETENTION_DAYS`` and
-    the ``version_history.prune_old_versions`` task being scheduled in
-    ``CELERY_CONFIG.beat_schedule`` (see :func:`_prune_task_scheduled`). A
-    positive retention value with Celery disabled or the task unscheduled
-    reports ``pruning_enabled=False``.
-
-    ``history_begins_at`` is the completeness floor: the most recent instant
-    before which history may be incomplete. It is the *latest* of two
-    boundaries, because a record can be missing due to either one:
-
-    * the *current* prune cutoff (``now - retention``) under the policy in
-      effect right now, and
-    * the durable prune watermark — the most recent ``issued_at`` the prune
-      task has ever actually deleted (see
-      :attr:`SharedKey.VERSION_HISTORY_PRUNE_WATERMARK`).
-
-    The watermark is what makes this correct across policy changes: if a
-    shorter window pruned aggressively in the past, that destruction stands
-    even after retention is widened or disabled. So the watermark applies
-    even when ``pruning_enabled`` is ``False``. ``history_begins_at`` is
-    ``None`` only when pruning is disabled *and* nothing was ever pruned.
-    Absence of a record before this floor is never by itself evidence it
-    never existed.
+    ``history_begins_at`` is the current prune cutoff (``now - retention``):
+    version and activity records issued before it may already have been
+    pruned, so their absence is not evidence they never existed. It is
+    ``None`` when pruning is disabled (non-positive retention).
     """
     retention_days = int(
         current_app.config.get("SUPERSET_VERSION_HISTORY_RETENTION_DAYS", 30)
     )
-    watermark = _prune_watermark()
     if retention_days <= 0:
-        # Pruning is off now, but past pruning is irreversible: the watermark
-        # (if any) is still the completeness floor.
         return {
             "version_history_days": None,
             "pruning_enabled": False,
-            "history_begins_at": watermark.isoformat() if watermark else None,
+            "history_begins_at": None,
         }
     # Naive UTC, matching ``version_transaction.issued_at`` and the prune
     # task's own cutoff arithmetic.
     reference = now or datetime.now(timezone.utc).replace(tzinfo=None)
     cutoff = reference - timedelta(days=retention_days)
-    # The floor is the most recent of the current cutoff and the historical
-    # high-water mark of destruction.
-    floor = max(cutoff, watermark) if watermark else cutoff
     return {
         "version_history_days": retention_days,
-        "pruning_enabled": _prune_task_scheduled(),
-        "history_begins_at": floor.isoformat(),
+        "pruning_enabled": True,
+        "history_begins_at": cutoff.isoformat(),
     }
-
-
-def _prune_watermark() -> datetime | None:
-    """Read the durable prune high-water mark, or ``None`` if never pruned.
-
-    Persisted by ``version_history.prune_old_versions`` as an ISO-8601
-    naive-UTC string under :attr:`SharedKey.VERSION_HISTORY_PRUNE_WATERMARK`.
-    Read failures (e.g. missing ``key_value`` table before migrations) are
-    swallowed to ``None``: a disclosure endpoint must never 500 because the
-    watermark could not be read.
-    """
-    # pylint: disable=import-outside-toplevel
-    from superset.key_value.shared_entries import get_shared_value
-    from superset.key_value.types import SharedKey
-
-    try:
-        raw = get_shared_value(SharedKey.VERSION_HISTORY_PRUNE_WATERMARK)
-    except Exception:  # pylint: disable=broad-except
-        return None
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(str(raw))
-    except ValueError:
-        return None

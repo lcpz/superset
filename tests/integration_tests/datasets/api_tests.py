@@ -2594,6 +2594,36 @@ class TestDatasetApi(SupersetTestCase):
         assert response["charts"]["count"] == 18
         assert response["dashboards"]["count"] == 1
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
+    def test_get_dataset_migration_evidence(self):
+        """
+        Dataset API: Test the migration evidence bundle is digested and bounded
+        """
+        self.login(ADMIN_USERNAME)
+        table = self.get_birth_names_dataset()
+        uri = f"api/v1/dataset/{table.uuid}/migration_evidence/?page_size=2"
+        rv = self.get_assert_metric(uri, "migration_evidence")
+        assert rv.status_code == 200
+        assert rv.headers["Cache-Control"] == "no-store"
+        response = json.loads(rv.data.decode("utf-8"))
+        evidence = response["evidence"]
+        assert evidence["dataset"]["uuid"] == str(table.uuid)
+        assert evidence["assets"][0]["kind"] == "dataset"
+        assert len(evidence["inventory"]["charts"]["result"]) <= 2
+        assert response["digest"]["algorithm"] == "sha256"
+        assert (
+            response["digest"]["value"]
+            == json.loads(self.client.get(uri).data.decode("utf-8"))["digest"]["value"]
+        )
+
+        rv = self.client.get(f"api/v1/dataset/{table.uuid}/migration_evidence/?page=-1")
+        assert rv.status_code == 400
+
+        self.logout()
+        self.login(GAMMA_USERNAME)
+        rv = self.client.get(f"api/v1/dataset/{table.uuid}/migration_evidence/")
+        assert rv.status_code in (403, 404)
+
     def test_get_dataset_related_objects_not_found(self):
         """
         Dataset API: Test related objects not found

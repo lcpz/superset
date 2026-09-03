@@ -15,22 +15,18 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from .create_dataset import create_dataset
-from .create_virtual_dataset import create_virtual_dataset
-from .export_dataset_migration_evidence import export_dataset_migration_evidence
-from .get_dataset_info import get_dataset_info
-from .get_dataset_usage import get_dataset_usage
-from .list_datasets import list_datasets
-from .query_dataset import query_dataset
-from .update_dataset_metric import update_dataset_metric
+from .get_chart_activity import get_chart_activity
+from .get_chart_versions import get_chart_versions
+from .get_dashboard_activity import get_dashboard_activity
+from .get_dashboard_versions import get_dashboard_versions
+from .get_dataset_activity import get_dataset_activity
+from .get_dataset_versions import get_dataset_versions
 
 __all__ = [
-    "create_dataset",
-    "create_virtual_dataset",
-    "export_dataset_migration_evidence",
-    "get_dataset_info",
-    "get_dataset_usage",
-    "list_datasets",
-    "query_dataset",
-    "update_dataset_metric",
+    "get_chart_activity",
+    "get_chart_versions",
+    "get_dashboard_activity",
+    "get_dashboard_versions",
+    "get_dataset_activity",
+    "get_dataset_versions",
 ]

@@ -20,6 +20,7 @@ Get dataset usage (reverse lineage) FastMCP tool.
 """
 
 import logging
+from datetime import datetime, timezone
 
 from fastmcp import Context
 from superset_core.mcp.decorators import tool, ToolAnnotations
@@ -111,13 +112,10 @@ async def get_dataset_usage(
             )
         )
         return response
-    except Exception as exc:
-        logger.exception(
-            "Unexpected error while resolving dataset usage: %s: %s",
-            type(exc).__name__,
-            str(exc),
+    except Exception as e:
+        await ctx.error("Dataset usage lookup failed: %s" % e)
+        return DatasetError(
+            error=f"Failed to get dataset usage: {str(e)}",
+            error_type="InternalError",
+            timestamp=datetime.now(timezone.utc),
         )
-        await ctx.error(
-            "Dataset usage lookup failed: %s: %s" % (type(exc).__name__, str(exc))
-        )
-        raise
