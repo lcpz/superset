@@ -17,7 +17,6 @@
 
 from .create_dataset import create_dataset
 from .create_virtual_dataset import create_virtual_dataset
-from .export_dataset_migration_evidence import export_dataset_migration_evidence
 from .get_dataset_info import get_dataset_info
 from .get_dataset_usage import get_dataset_usage
 from .list_datasets import list_datasets
@@ -27,7 +26,6 @@ from .update_dataset_metric import update_dataset_metric
 __all__ = [
     "create_dataset",
     "create_virtual_dataset",
-    "export_dataset_migration_evidence",
     "get_dataset_info",
     "get_dataset_usage",
     "list_datasets",
