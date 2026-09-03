@@ -524,22 +524,16 @@ def _prune_old_versions_impl(retention_days: int) -> dict[str, Any]:
     }
     total_retried = 0
     after_id = 0
-    high_water: datetime | None = None
     while True:
         pass_stats, retries = _run_pass_with_retry(cutoff, tables, after_id)
         total_retried += retries
         for key in totals:
             totals[key] += pass_stats.get(key, 0)
         pass_high_water = pass_stats.get("pruned_high_water")
-        if pass_high_water is not None and (
-            high_water is None or pass_high_water > high_water
-        ):
-            high_water = pass_high_water
+        _advance_prune_watermark(pass_high_water)
         if pass_stats.get("candidate_count", 0) < _MAX_PRUNE_BATCH:
             break
         after_id = pass_stats.get("max_candidate_id", after_id)
-
-    _advance_prune_watermark(high_water)
 
     stats: dict[str, Any] = {"cutoff": cutoff.isoformat(), **totals}
     if total_retried:
@@ -560,18 +554,18 @@ def _advance_prune_watermark(high_water: datetime | None) -> None:
     irreversible, the watermark is monotonic: a run with an older (or absent)
     high-water mark never regresses the stored value.
 
-    The write runs on ``db.session`` (via ``upsert_shared_value``) *after* the
-    SERIALIZABLE prune passes have committed, so it is not atomic with the
+    The write runs on ``db.session`` (via ``upsert_shared_value``) *after* each
+    SERIALIZABLE prune pass has committed, so it is not atomic with the
     DELETE — ``KeyValueDAO`` has no way to join the raw prune connection. If the
-    process dies in that window the watermark under-reports by one run, but the
-    effect is self-healing and never unsafe: the next successful prune
-    recomputes the high-water mark from the transactions still older than the
-    cutoff and advances it, and until then ``retention_disclosure``'s
-    current-policy cutoff is the later (dominant) boundary anyway, so the
-    disclosed floor stays conservative rather than falsely claiming
-    completeness. Persistence failures are likewise logged and swallowed —
-    losing a watermark update must never fail the prune itself, whose primary
-    job is reclaiming disk.
+    process dies in that window, only the latest committed pass's watermark is
+    lost; earlier passes remain recorded. The effect is self-healing and never
+    unsafe: the next successful prune recomputes the high-water mark from the
+    transactions still older than the cutoff and advances it, and until then
+    ``retention_disclosure``'s current-policy cutoff is the later (dominant)
+    boundary anyway, so the disclosed floor stays conservative rather than
+    falsely claiming completeness. Persistence failures are likewise logged and
+    swallowed — losing a watermark update must never fail the prune itself,
+    whose primary job is reclaiming disk.
     """
     if high_water is None:
         return

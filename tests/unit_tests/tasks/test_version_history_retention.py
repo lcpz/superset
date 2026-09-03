@@ -181,6 +181,42 @@ def test_all_attempts_fail_reraises_after_max_retries(stats: MagicMock) -> None:
     )
 
 
+def test_watermark_persisted_per_pass_when_later_batch_fails(
+    stats: MagicMock,
+) -> None:
+    """A committed batch keeps its watermark when a later batch fails."""
+    tables = version_history_retention.ShadowTables(
+        parent=[MagicMock()], child=[MagicMock()], m2m=None, transaction=MagicMock()
+    )
+    high_water = datetime(2026, 1, 2, 3, 4, 5)
+    first_pass_stats = {
+        "pruned_transactions": 5,
+        "candidate_count": version_history_retention._MAX_PRUNE_BATCH,
+        "max_candidate_id": 500,
+        "pruned_high_water": high_water,
+    }
+    exc = OperationalError("SELECT 1", {}, Exception("conflict"))
+    pass_fn: MagicMock = MagicMock(
+        side_effect=[
+            first_pass_stats,
+            exc,
+            *[exc] * (version_history_retention._MAX_RETRY_ATTEMPTS - 1),
+        ]
+    )
+    with (
+        patch.object(
+            version_history_retention, "_resolve_shadow_tables", return_value=tables
+        ),
+        patch.object(version_history_retention, "_run_prune_pass", pass_fn),
+        patch.object(version_history_retention.time, "sleep"),
+        patch.object(version_history_retention, "_advance_prune_watermark") as advance,
+        pytest.raises(OperationalError),
+    ):
+        version_history_retention._prune_old_versions_impl(retention_days=30)
+
+    advance.assert_called_once_with(high_water)
+
+
 def test_terminal_failure_emits_failed_metric_and_swallows(stats: MagicMock) -> None:
     """The Celery wrapper catches a terminal failure, returns ``{"error": 1}``
     (so the schedule isn't poisoned), AND emits a ``.failed`` counter so the
