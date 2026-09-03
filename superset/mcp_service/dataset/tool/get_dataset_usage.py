@@ -22,6 +22,7 @@ Get dataset usage (reverse lineage) FastMCP tool.
 import logging
 
 from fastmcp import Context
+from fastmcp.exceptions import ToolError
 from superset_core.mcp.decorators import tool, ToolAnnotations
 
 from superset import is_feature_enabled
@@ -117,7 +118,7 @@ async def get_dataset_usage(
             type(exc).__name__,
             str(exc),
         )
-        await ctx.error(
-            "Dataset usage lookup failed: %s: %s" % (type(exc).__name__, str(exc))
-        )
-        raise
+        await ctx.error("Dataset usage lookup failed: %s" % type(exc).__name__)
+        raise ToolError(
+            "Internal error in get_dataset_usage: An unexpected error occurred."
+        ) from exc
