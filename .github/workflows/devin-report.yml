@@ -124,7 +124,7 @@ jobs:
               --body "Automated report, refreshed by the devin-report workflow. See .github/devin-observability.md." | grep -oE '[0-9]+$')
           fi
           COMMENT_ID=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$BOARD_ISSUE/comments?per_page=100" \
-            --jq '[.[][] | select(.body | startswith("<!-- devin-status-board -->"))][0].id // empty')
+            | jq -r '[.[][] | select(.body | startswith("<!-- devin-status-board -->"))][0].id // empty')
           if [ -n "$COMMENT_ID" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" -F body=@report.md >/dev/null
           else
