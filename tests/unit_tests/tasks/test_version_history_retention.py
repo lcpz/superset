@@ -29,7 +29,8 @@ operator alerting.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from unittest.mock import MagicMock, patch
+from datetime import datetime
+from unittest.mock import call, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -180,6 +181,77 @@ def test_all_attempts_fail_reraises_after_max_retries(stats: MagicMock) -> None:
     )
 
 
+def test_watermark_persisted_per_pass_when_later_batch_fails(
+    stats: MagicMock,
+) -> None:
+    """A committed batch keeps its watermark when a later batch fails."""
+    tables = version_history_retention.ShadowTables(
+        parent=[MagicMock()], child=[MagicMock()], m2m=None, transaction=MagicMock()
+    )
+    high_water = datetime(2026, 1, 2, 3, 4, 5)
+    first_pass_stats = {
+        "pruned_transactions": 5,
+        "candidate_count": version_history_retention._MAX_PRUNE_BATCH,
+        "max_candidate_id": 500,
+        "pruned_high_water": high_water,
+    }
+    exc = OperationalError("SELECT 1", {}, Exception("conflict"))
+    pass_fn: MagicMock = MagicMock(
+        side_effect=[
+            first_pass_stats,
+            exc,
+            *[exc] * (version_history_retention._MAX_RETRY_ATTEMPTS - 1),
+        ]
+    )
+    with (
+        patch.object(
+            version_history_retention, "_resolve_shadow_tables", return_value=tables
+        ),
+        patch.object(version_history_retention, "_run_prune_pass", pass_fn),
+        patch.object(version_history_retention.time, "sleep"),
+        patch.object(version_history_retention, "_advance_prune_watermark") as advance,
+        pytest.raises(OperationalError),
+    ):
+        version_history_retention._prune_old_versions_impl(retention_days=30)
+
+    advance.assert_called_once_with(high_water)
+
+
+def test_watermark_write_failure_recovered_by_later_pass() -> None:
+    """A later pass retries the running maximum after an earlier write fails."""
+    tables = version_history_retention.ShadowTables(
+        parent=[MagicMock()], child=[MagicMock()], m2m=None, transaction=MagicMock()
+    )
+    first_high_water = datetime(2026, 1, 5)
+    second_high_water = datetime(2026, 1, 3)
+    pass_fn: MagicMock = MagicMock(
+        side_effect=[
+            {
+                "candidate_count": version_history_retention._MAX_PRUNE_BATCH,
+                "max_candidate_id": 500,
+                "pruned_high_water": first_high_water,
+            },
+            {
+                "candidate_count": 0,
+                "pruned_high_water": second_high_water,
+            },
+        ]
+    )
+    with (
+        patch.object(
+            version_history_retention, "_resolve_shadow_tables", return_value=tables
+        ),
+        patch.object(version_history_retention, "_run_prune_pass", pass_fn),
+        patch.object(version_history_retention, "_advance_prune_watermark") as advance,
+    ):
+        version_history_retention._prune_old_versions_impl(retention_days=30)
+
+    assert advance.call_args_list == [
+        call(first_high_water),
+        call(first_high_water),
+    ]
+
+
 def test_terminal_failure_emits_failed_metric_and_swallows(stats: MagicMock) -> None:
     """The Celery wrapper catches a terminal failure, returns ``{"error": 1}``
     (so the schedule isn't poisoned), AND emits a ``.failed`` counter so the
@@ -198,3 +270,43 @@ def test_terminal_failure_emits_failed_metric_and_swallows(stats: MagicMock) -> 
 
     assert result == {"error": 1}
     stats.incr.assert_called_once_with("superset.versioning.retention.failed")
+
+
+def test_advance_prune_watermark_noop_when_nothing_pruned() -> None:
+    """A run that deleted nothing (``high_water=None``) must not touch the
+    durable watermark."""
+    with patch("superset.key_value.shared_entries.upsert_shared_value") as upsert:
+        version_history_retention._advance_prune_watermark(None)
+    upsert.assert_not_called()
+
+
+def test_advance_prune_watermark_advances_forward() -> None:
+    """A high-water mark newer than the stored value advances the watermark."""
+    with (
+        patch(
+            "superset.key_value.shared_entries.get_shared_value",
+            return_value="2026-01-01T00:00:00",
+        ),
+        patch("superset.key_value.shared_entries.upsert_shared_value") as upsert,
+    ):
+        version_history_retention._advance_prune_watermark(
+            datetime(2026, 3, 15, 0, 0, 0)
+        )
+    upsert.assert_called_once()
+    assert upsert.call_args.args[1] == "2026-03-15T00:00:00"
+
+
+def test_advance_prune_watermark_never_regresses() -> None:
+    """A high-water mark older than the stored value leaves it untouched
+    (pruning is irreversible, so the watermark is monotonic)."""
+    with (
+        patch(
+            "superset.key_value.shared_entries.get_shared_value",
+            return_value="2026-03-15T00:00:00",
+        ),
+        patch("superset.key_value.shared_entries.upsert_shared_value") as upsert,
+    ):
+        version_history_retention._advance_prune_watermark(
+            datetime(2026, 1, 1, 0, 0, 0)
+        )
+    upsert.assert_not_called()

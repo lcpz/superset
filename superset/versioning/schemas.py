@@ -170,15 +170,25 @@ class RetentionDisclosureSchema(Schema):
         },
     )
     pruning_enabled = fields.Boolean(
-        metadata={"description": "Whether scheduled retention pruning is active."},
+        metadata={
+            "description": (
+                "Whether retention pruning is actually active: requires both a "
+                "positive retention window and the prune task being scheduled "
+                "in CELERY_CONFIG.beat_schedule."
+            )
+        },
     )
     history_begins_at = fields.String(
         allow_none=True,
         metadata={
             "description": (
-                "ISO-8601 UTC instant of the current prune cutoff. Version and "
-                "activity records issued before it may have been pruned. Null "
-                "when pruning is disabled."
+                "ISO-8601 UTC completeness floor: the most recent instant "
+                "before which history may be incomplete. It is the later of the "
+                "current prune cutoff and the durable prune watermark (the most "
+                "recent record ever actually pruned), so it stays correct even "
+                "after the retention window is widened or disabled. Records "
+                "issued before it may have been pruned. Null only when pruning "
+                "is disabled and nothing was ever pruned."
             )
         },
     )

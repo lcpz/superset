@@ -30,6 +30,8 @@ from superset.versioning.disclosure import (
     retention_disclosure,
 )
 
+_WATERMARK = "superset.versioning.disclosure._prune_watermark"
+
 
 def test_paginate_without_page_size_returns_everything() -> None:
     env = paginate_with_disclosure(list(range(5)))
@@ -79,7 +81,10 @@ def test_parse_page_params_rejects_bad_input(args: dict[str, str]) -> None:
 
 
 def test_retention_disclosure_reports_cutoff(app: Flask) -> None:
-    with mock.patch.dict(app.config, {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30}):
+    with (
+        mock.patch.dict(app.config, {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30}),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
         env = retention_disclosure(now=datetime(2026, 3, 31, 12, 0, 0))
     assert env == {
         "version_history_days": 30,
@@ -89,13 +94,198 @@ def test_retention_disclosure_reports_cutoff(app: Flask) -> None:
 
 
 def test_retention_disclosure_disabled(app: Flask) -> None:
-    with mock.patch.dict(app.config, {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 0}):
+    with (
+        mock.patch.dict(app.config, {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 0}),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
         env = retention_disclosure()
     assert env == {
         "version_history_days": None,
         "pruning_enabled": False,
         "history_begins_at": None,
     }
+
+
+def test_retention_disclosure_watermark_dominates_widened_window(app: Flask) -> None:
+    """A watermark more recent than the current cutoff is the completeness
+    floor: history destroyed under a previously-shorter window stays gone even
+    after retention is widened."""
+    with (
+        mock.patch.dict(app.config, {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 365}),
+        mock.patch(
+            "superset.versioning.disclosure._prune_watermark",
+            return_value=datetime(2026, 3, 15, 0, 0, 0),
+        ),
+    ):
+        env = retention_disclosure(now=datetime(2026, 3, 31, 12, 0, 0))
+    # cutoff would be 2025-03-31, but the watermark (2026-03-15) is later.
+    assert env["history_begins_at"] == "2026-03-15T00:00:00"
+
+
+def test_retention_disclosure_cutoff_dominates_old_watermark(app: Flask) -> None:
+    """A watermark older than the current cutoff does not move the floor back."""
+    with (
+        mock.patch.dict(app.config, {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30}),
+        mock.patch(
+            "superset.versioning.disclosure._prune_watermark",
+            return_value=datetime(2025, 1, 1, 0, 0, 0),
+        ),
+    ):
+        env = retention_disclosure(now=datetime(2026, 3, 31, 12, 0, 0))
+    assert env["history_begins_at"] == "2026-03-01T12:00:00"
+
+
+def test_retention_disclosure_watermark_survives_disabled_pruning(app: Flask) -> None:
+    """With pruning disabled now, a past watermark is still the floor —
+    already-deleted history does not come back."""
+    with (
+        mock.patch.dict(app.config, {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 0}),
+        mock.patch(
+            "superset.versioning.disclosure._prune_watermark",
+            return_value=datetime(2026, 3, 15, 0, 0, 0),
+        ),
+    ):
+        env = retention_disclosure()
+    assert env["version_history_days"] is None
+    assert env["pruning_enabled"] is False
+    assert env["history_begins_at"] == "2026-03-15T00:00:00"
+
+
+def test_retention_disclosure_pruning_off_when_celery_disabled(app: Flask) -> None:
+    """A positive retention window with Celery disabled reports the window but
+    ``pruning_enabled=False`` — the prune task can never fire."""
+    with (
+        mock.patch.dict(
+            app.config,
+            {"SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30, "CELERY_CONFIG": None},
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure(now=datetime(2026, 3, 31, 12, 0, 0))
+    assert env["version_history_days"] == 30
+    assert env["pruning_enabled"] is False
+    assert env["history_begins_at"] == "2026-03-01T12:00:00"
+
+
+def test_retention_disclosure_pruning_off_when_task_unscheduled(app: Flask) -> None:
+    """Celery configured but its beat_schedule omits the prune task."""
+
+    class _NoPruneCeleryConfig:
+        beat_schedule = {"reports.scheduler": {"task": "reports.scheduler"}}
+
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": _NoPruneCeleryConfig,
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure()
+    assert env["version_history_days"] == 30
+    assert env["pruning_enabled"] is False
+
+
+def test_retention_disclosure_pruning_on_when_task_scheduled(app: Flask) -> None:
+    """Prune task scheduled under an arbitrary key (matched by ``task``)."""
+
+    class _PruneCeleryConfig:
+        beat_schedule = {
+            "prune_versions": {"task": "version_history.prune_old_versions"},
+        }
+
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": _PruneCeleryConfig,
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure()
+    assert env["pruning_enabled"] is True
+
+
+def test_retention_disclosure_pruning_off_when_module_missing_from_imports(
+    app: Flask,
+) -> None:
+    """Scheduled but its module is absent from an explicitly-configured
+    ``imports``: a fired task raises Celery ``NotRegistered`` and prunes
+    nothing, so ``pruning_enabled`` must be ``False`` (mirrors the initializer
+    warning)."""
+
+    class _NoImportCeleryConfig:
+        imports = ("superset.tasks.deletion_retention",)
+        beat_schedule = {
+            "version_history.prune_old_versions": {
+                "task": "version_history.prune_old_versions",
+            },
+        }
+
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": _NoImportCeleryConfig,
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure()
+    assert env["version_history_days"] == 30
+    assert env["pruning_enabled"] is False
+
+
+def test_retention_disclosure_pruning_on_when_module_in_imports(app: Flask) -> None:
+    """Scheduled and its module is listed in an explicit ``imports``: pruning
+    is genuinely active."""
+
+    class _FullCeleryConfig:
+        imports = ("superset.tasks.version_history_retention",)
+        beat_schedule = {
+            "version_history.prune_old_versions": {
+                "task": "version_history.prune_old_versions",
+            },
+        }
+
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": _FullCeleryConfig,
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure()
+    assert env["pruning_enabled"] is True
+
+
+def test_retention_disclosure_pruning_off_for_dotted_config(app: Flask) -> None:
+    """A dotted ``CELERY_CONFIG`` is resolved by Celery's loader, not here, so
+    the schedule is not inspectable. We report ``pruning_enabled=False`` rather
+    than over-claiming a prune that may never fire; ``history_begins_at`` stays
+    conservative regardless."""
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": "superset_config.CeleryConfig",
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure(now=datetime(2026, 3, 31, 12, 0, 0))
+    assert env["version_history_days"] == 30
+    assert env["pruning_enabled"] is False
+    assert env["history_begins_at"] == "2026-03-01T12:00:00"
 
 
 def test_related_objects_helper_filters_access_then_paginates(app: Flask) -> None:

@@ -60,6 +60,13 @@ class SharedKey(StrEnum):
     # Read live each run by deletion_retention.purge_soft_deleted; falls back to
     # SOFT_DELETE_RETENTION_DAYS when unset. 0 disables the purge.
     SOFT_DELETE_RETENTION_DAYS = "soft_delete_retention_days"
+    # Durable high-water mark of version-history pruning: the most recent
+    # ``version_transaction.issued_at`` (ISO-8601 naive-UTC string) that
+    # version_history.prune_old_versions has ever actually deleted. Pruning is
+    # irreversible, so this only ever advances forward in time. Read by
+    # retention_disclosure to compute a completeness floor that survives
+    # widening or disabling the retention window.
+    VERSION_HISTORY_PRUNE_WATERMARK = "version_history_prune_watermark"
 
 
 class KeyValueCodec(ABC):
