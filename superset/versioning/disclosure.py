@@ -61,14 +61,20 @@ def _prune_task_scheduled() -> bool:
     task. Mirrors the detection in
     ``AppInitializer._warn_if_retention_beat_missing``. When
     ``CELERY_CONFIG`` is a dotted import string it is resolved by Celery's
-    loader rather than here, so we conservatively assume the default config
-    (task scheduled) is in effect.
+    loader rather than here; resolving operator code solely to answer this
+    question would duplicate the loader and risk import side effects (the
+    same reason ``AppInitializer._warn_if_retention_beat_missing`` skips it),
+    so we conservatively report the schedule as unknown (``False``) rather
+    than claiming a prune that may never fire.
     """
     celery_config: Any = current_app.config.get("CELERY_CONFIG")
     if celery_config is None:
         return False  # Celery disabled entirely; the prune task never fires.
     if isinstance(celery_config, str):
-        return True  # Resolved by Celery's loader; assume the default entry.
+        # Resolved by Celery's loader; the schedule is not inspectable here.
+        # Report False so pruning_enabled never over-claims (history_begins_at
+        # stays conservative regardless).
+        return False
     beat_schedule = (
         celery_config.get("beat_schedule")
         if isinstance(celery_config, dict)

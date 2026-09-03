@@ -210,6 +210,27 @@ def test_retention_disclosure_pruning_on_when_task_scheduled(app: Flask) -> None
     assert env["pruning_enabled"] is True
 
 
+def test_retention_disclosure_pruning_off_for_dotted_config(app: Flask) -> None:
+    """A dotted ``CELERY_CONFIG`` is resolved by Celery's loader, not here, so
+    the schedule is not inspectable. We report ``pruning_enabled=False`` rather
+    than over-claiming a prune that may never fire; ``history_begins_at`` stays
+    conservative regardless."""
+    with (
+        mock.patch.dict(
+            app.config,
+            {
+                "SUPERSET_VERSION_HISTORY_RETENTION_DAYS": 30,
+                "CELERY_CONFIG": "superset_config.CeleryConfig",
+            },
+        ),
+        mock.patch(_WATERMARK, return_value=None),
+    ):
+        env = retention_disclosure(now=datetime(2026, 3, 31, 12, 0, 0))
+    assert env["version_history_days"] == 30
+    assert env["pruning_enabled"] is False
+    assert env["history_begins_at"] == "2026-03-01T12:00:00"
+
+
 def test_related_objects_helper_filters_access_then_paginates(app: Flask) -> None:
     from superset.datasets import related_objects as mod
 
