@@ -474,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     automation: JsonDict | None = None
     try:
         sessions = devin.sessions(automation_id or None)
-    except (RuntimeError, urllib.error.URLError) as exc:
+    except (RuntimeError, OSError, json.JSONDecodeError) as exc:
         # Report from GitHub evidence only; the health line explains the gap.
         print(f"::warning::Devin API unavailable: {exc}", file=sys.stderr)
         devin_error = str(exc)
@@ -482,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         try:
             automation = devin.automation(automation_id)
-        except (RuntimeError, urllib.error.URLError) as exc:
+        except (RuntimeError, OSError, json.JSONDecodeError) as exc:
             print(f"::warning::Devin automation lookup failed: {exc}", file=sys.stderr)
     rows = build_rows(gh, sessions, now, sessions_known)
     health, notes = automation_health(automation, rows, sessions_known)
