@@ -1119,7 +1119,16 @@ def _snapshot_from_json(data: JsonDict) -> Snapshot:
             for p in data["pulls"]
         ],
         check_runs=[CheckRun(**c) for c in data["check_runs"]],
-        sessions=[_session_row(data["repo"], s) for s in data["sessions"]],
+        sessions=[
+            SessionRow(
+                **{
+                    **s,
+                    "created_at": _iso(_parse_ts(s.get("created_at"))),
+                    "updated_at": _iso(_parse_ts(s.get("updated_at"))),
+                }
+            )
+            for s in data["sessions"]
+        ],
         automations=[AutomationRow(**a) for a in data["automations"]],
         findings=[Finding(**f) for f in data["findings"]],
     )

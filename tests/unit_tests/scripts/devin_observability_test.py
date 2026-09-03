@@ -129,8 +129,18 @@ def test_snapshot_from_json_normalizes_epoch_timestamps() -> None:
             "sessions": [
                 {
                     "session_id": "session-1",
+                    "title": None,
+                    "status": None,
+                    "status_detail": None,
+                    "origin": None,
+                    "automation_id": None,
                     "created_at": 1788436151,
                     "updated_at": 1788436152,
+                    "acus_consumed": 0.0,
+                    "url": None,
+                    "tags": [],
+                    "pr_numbers": [14, 15],
+                    "category": None,
                 }
             ],
             "automations": [],
@@ -140,6 +150,7 @@ def test_snapshot_from_json_normalizes_epoch_timestamps() -> None:
 
     assert snapshot.sessions[0].created_at == "2026-09-03T11:49:11+00:00"
     assert snapshot.sessions[0].updated_at == "2026-09-03T11:49:12+00:00"
+    assert snapshot.sessions[0].pr_numbers == [14, 15]
 
 
 def test_dispatch_markers_are_parsed_from_hidden_comments() -> None:
