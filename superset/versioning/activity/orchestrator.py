@@ -334,6 +334,7 @@ def activity_endpoint(
     without a live Flask context.
     """
     # pylint: disable=import-outside-toplevel
+    from superset.versioning.disclosure import retention_disclosure
     from superset.versioning.schemas import ActivityResponseSchema
 
     try:
@@ -350,7 +351,12 @@ def activity_endpoint(
         model_cls, entity.uuid, resolved_entity=entity, **params
     )
     payload = ActivityResponseSchema().dump(
-        {"result": records, "count": count, "truncated": truncated}
+        {
+            "result": records,
+            "count": count,
+            "truncated": truncated,
+            "retention": retention_disclosure(),
+        }
     )
     return api.response(200, **payload)
 

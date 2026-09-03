@@ -152,11 +152,54 @@ class VersionListItemSchema(Schema):
     )
 
 
+class RetentionDisclosureSchema(Schema):
+    """Retention/pruning disclosure attached to history responses.
+
+    Absence of a record older than ``history_begins_at`` is NOT evidence
+    that it never existed: the ``version_history.prune_old_versions`` task
+    may already have dropped it.
+    """
+
+    version_history_days = fields.Integer(
+        allow_none=True,
+        metadata={
+            "description": (
+                "Retention window in days (SUPERSET_VERSION_HISTORY_RETENTION_DAYS). "
+                "Null when pruning is disabled."
+            )
+        },
+    )
+    pruning_enabled = fields.Boolean(
+        metadata={
+            "description": (
+                "Whether retention pruning is actually active: requires both a "
+                "positive retention window and the prune task being scheduled "
+                "in CELERY_CONFIG.beat_schedule."
+            )
+        },
+    )
+    history_begins_at = fields.String(
+        allow_none=True,
+        metadata={
+            "description": (
+                "ISO-8601 UTC completeness floor: the most recent instant "
+                "before which history may be incomplete. It is the later of the "
+                "current prune cutoff and the durable prune watermark (the most "
+                "recent record ever actually pruned), so it stays correct even "
+                "after the retention window is widened or disabled. Records "
+                "issued before it may have been pruned. Null only when pruning "
+                "is disabled and nothing was ever pruned."
+            )
+        },
+    )
+
+
 class VersionListResponseSchema(Schema):
     """Envelope for version list responses."""
 
     result = fields.List(fields.Nested(VersionListItemSchema))
     count = fields.Integer()
+    retention = fields.Nested(RetentionDisclosureSchema)
 
 
 # ---- Cross-entity activity view ------------------------------------------
@@ -481,3 +524,4 @@ class ActivityResponseSchema(Schema):
             )
         },
     )
+    retention = fields.Nested(RetentionDisclosureSchema)

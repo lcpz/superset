@@ -29,6 +29,7 @@ operator alerting.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -198,3 +199,43 @@ def test_terminal_failure_emits_failed_metric_and_swallows(stats: MagicMock) -> 
 
     assert result == {"error": 1}
     stats.incr.assert_called_once_with("superset.versioning.retention.failed")
+
+
+def test_advance_prune_watermark_noop_when_nothing_pruned() -> None:
+    """A run that deleted nothing (``high_water=None``) must not touch the
+    durable watermark."""
+    with patch("superset.key_value.shared_entries.upsert_shared_value") as upsert:
+        version_history_retention._advance_prune_watermark(None)
+    upsert.assert_not_called()
+
+
+def test_advance_prune_watermark_advances_forward() -> None:
+    """A high-water mark newer than the stored value advances the watermark."""
+    with (
+        patch(
+            "superset.key_value.shared_entries.get_shared_value",
+            return_value="2026-01-01T00:00:00",
+        ),
+        patch("superset.key_value.shared_entries.upsert_shared_value") as upsert,
+    ):
+        version_history_retention._advance_prune_watermark(
+            datetime(2026, 3, 15, 0, 0, 0)
+        )
+    upsert.assert_called_once()
+    assert upsert.call_args.args[1] == "2026-03-15T00:00:00"
+
+
+def test_advance_prune_watermark_never_regresses() -> None:
+    """A high-water mark older than the stored value leaves it untouched
+    (pruning is irreversible, so the watermark is monotonic)."""
+    with (
+        patch(
+            "superset.key_value.shared_entries.get_shared_value",
+            return_value="2026-03-15T00:00:00",
+        ),
+        patch("superset.key_value.shared_entries.upsert_shared_value") as upsert,
+    ):
+        version_history_retention._advance_prune_watermark(
+            datetime(2026, 1, 1, 0, 0, 0)
+        )
+    upsert.assert_not_called()
