@@ -112,7 +112,11 @@ def _request(
         raise RuntimeError(f"{method} {url} -> {exc.code}: {detail[:300]}") from exc
 
 
-def _parse_ts(value: str | None) -> datetime | None:
+def _parse_ts(value: str | int | float | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc)
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -513,6 +517,31 @@ def collect_pull(gh: GitHubClient, pull: JsonDict) -> tuple[PullRow, list[CheckR
     return row, check_rows
 
 
+def _session_row(repo: str, session: dict[str, Any]) -> SessionRow:
+    """Build a normalized session row from a Devin API response."""
+    return SessionRow(
+        session_id=session["session_id"],
+        title=session.get("title"),
+        status=session.get("status"),
+        status_detail=session.get("status_detail"),
+        origin=session.get("origin"),
+        automation_id=session.get("automation_id"),
+        created_at=_iso(_parse_ts(session.get("created_at"))),
+        updated_at=_iso(_parse_ts(session.get("updated_at"))),
+        acus_consumed=float(session.get("acus_consumed") or 0),
+        url=session.get("url"),
+        tags=list(session.get("tags") or []),
+        pr_numbers=sorted(
+            {
+                n
+                for pr in session.get("pull_requests") or []
+                for n in _pr_numbers(repo, pr.get("pr_url", ""))
+            }
+        ),
+        category=session.get("category"),
+    )
+
+
 def collect(gh: GitHubClient, devin: DevinClient, now: datetime) -> Snapshot:
     since = now - LOOKBACK
     pulls: list[PullRow] = []
@@ -524,30 +553,7 @@ def collect(gh: GitHubClient, devin: DevinClient, now: datetime) -> Snapshot:
         pulls.append(row)
         checks.extend(runs)
 
-    sessions = [
-        SessionRow(
-            session_id=s["session_id"],
-            title=s.get("title"),
-            status=s.get("status"),
-            status_detail=s.get("status_detail"),
-            origin=s.get("origin"),
-            automation_id=s.get("automation_id"),
-            created_at=s.get("created_at"),
-            updated_at=s.get("updated_at"),
-            acus_consumed=float(s.get("acus_consumed") or 0),
-            url=s.get("url"),
-            tags=list(s.get("tags") or []),
-            pr_numbers=sorted(
-                {
-                    n
-                    for pr in s.get("pull_requests") or []
-                    for n in _pr_numbers(gh.repo, pr.get("pr_url", ""))
-                }
-            ),
-            category=s.get("category"),
-        )
-        for s in devin.sessions(gh.repo, since)
-    ]
+    sessions = [_session_row(gh.repo, s) for s in devin.sessions(gh.repo, since)]
     automations = []
     for a in devin.automations():
         last = a.get("last_invocation") or {}
@@ -1113,7 +1119,16 @@ def _snapshot_from_json(data: JsonDict) -> Snapshot:
             for p in data["pulls"]
         ],
         check_runs=[CheckRun(**c) for c in data["check_runs"]],
-        sessions=[SessionRow(**s) for s in data["sessions"]],
+        sessions=[
+            SessionRow(
+                **{
+                    **s,
+                    "created_at": _iso(_parse_ts(s.get("created_at"))),
+                    "updated_at": _iso(_parse_ts(s.get("updated_at"))),
+                }
+            )
+            for s in data["sessions"]
+        ],
         automations=[AutomationRow(**a) for a in data["automations"]],
         findings=[Finding(**f) for f in data["findings"]],
     )
