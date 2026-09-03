@@ -700,6 +700,24 @@ Entity version history (the `version_transaction` / `*_version` shadow tables th
 
 The task ships in the default `CeleryConfig` (both the `superset.tasks.version_history_retention` import and the beat entry). A deployment that overrides `CELERY_CONFIG` without the beat entry logs a startup warning. When the override explicitly defines `imports`, a missing retention module is also reported; an absent `imports` setting is not diagnosed because Celery may register tasks through `include`, autodiscovery, or worker startup imports. Retention only prunes whatever history exists — capture itself is gated separately by `ENABLE_VERSIONING_CAPTURE`, which now ships on.
 
+**Retention disclosure on history responses.** The `GET /api/v1/{chart,dashboard,dataset}/<uuid>/versions/` and `.../activity/` responses now include a `retention` block so a consumer can tell that "no records" may mean "pruned" rather than "never existed":
+
+```json
+"retention": {
+  "version_history_days": 30,
+  "pruning_enabled": true,
+  "history_begins_at": "2026-03-01T12:00:00"
+}
+```
+
+- `version_history_days` — the configured window, or `null` when pruning is disabled.
+- `pruning_enabled` — `true` only when both a positive window is configured **and** the `version_history.prune_old_versions` task is actually scheduled in `CELERY_CONFIG.beat_schedule`. A positive window with Celery disabled or the task unscheduled reports `false`.
+- `history_begins_at` — the completeness floor: the most recent instant before which history may be incomplete. It is the later of the current prune cutoff (`now - version_history_days`) and a durable prune watermark — the most recent record the task has ever actually deleted. Because pruning is irreversible, the watermark only ever advances forward, so widening or disabling the retention window does **not** move this floor back and imply that already-deleted history is complete. Records issued before it may have been pruned; their absence is not evidence they never existed. It is `null` only when pruning is disabled and nothing was ever pruned.
+
+The watermark is stored in the `key_value` metastore table (under `SharedKey.VERSION_HISTORY_PRUNE_WATERMARK`) and updated by each prune run; no migration or operator action is required.
+
+**Pagination on `related_objects`.** `GET /api/v1/dataset/<id_or_uuid>/related_objects` accepts optional `page` / `page_size` query params. Without them the full lists are returned as before (existing consumers are unaffected); with `page_size` (clamped to 200) each of `charts` / `dashboards` is paginated and gains `truncated` / `page` / `page_size`, while `count` remains the total the requester may see. Items also gain a `uuid` field.
+
 ### Deletion retention (soft-deleted entities are eventually purged)
 
 Soft-deleted dashboards, charts, and datasets are now permanently removed after a retention window (default 30 days; `SOFT_DELETE_RETENTION_DAYS`, `0` disables; settable per workspace at runtime via the `deletion-retention set-window` CLI, which takes precedence). The `deletion_retention.purge_soft_deleted` Celery beat task runs daily and removes each aged-out entity together with its M:N join rows, owned children, datasource permission, and version-history shadow rows. After purge an entity is **unrecoverable** — its detail and `/restore` endpoints return 404 and its version history is gone.
