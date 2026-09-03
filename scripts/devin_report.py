@@ -376,10 +376,12 @@ def automation_health(
     if not devin_enabled:
         return "unknown (DEVIN_API_KEY not configured)", notes
     if automation is None:
-        return "unknown (automation id not configured)", notes
-    if not automation.get("enabled"):
+        # Personal (run_as creator) automations are invisible to service users;
+        # fall back to session evidence alone.
+        notes.append("automation record not readable; health inferred from sessions")
+    elif not automation.get("enabled"):
         return "DISABLED", notes
-    if last := automation.get("last_invocation") or {}:
+    elif last := automation.get("last_invocation") or {}:
         fired = datetime.fromtimestamp(last["fired_at"], tz=timezone.utc)
         notes.append(f"last invocation: {last['status']} at {fired.isoformat()}")
     missed = [r for r in rows if r.status == "dispatch-missed"]
@@ -480,7 +482,6 @@ def main(argv: list[str] | None = None) -> int:
             automation = devin.automation(automation_id)
         except (RuntimeError, urllib.error.URLError) as exc:
             print(f"::warning::Devin automation lookup failed: {exc}", file=sys.stderr)
-            devin_error = str(exc)
     rows = build_rows(gh, sessions, now, sessions_known)
     health, notes = automation_health(automation, rows, sessions_known)
     if devin_error:
