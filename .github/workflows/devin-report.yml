@@ -19,7 +19,8 @@ name: Devin status board
 
 on:
   schedule:
-    - cron: "0 7 * * *"
+    - cron: "0 7 * * *" # daily status board + observability snapshot
+    - cron: "0 1,13,19 * * *" # observability snapshot only (every 6h)
   workflow_dispatch:
     inputs:
       board_issue:
@@ -34,7 +35,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  observability:
+    # PR-centric snapshot for the Superset "Devin observability" database
+    # (scripts/devin_observability.py). Always uploaded as an artifact; written
+    # to Postgres only when the DEVIN_OBS_DATABASE_URL secret is configured.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Collect snapshot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          DEVIN_ORG_ID: ${{ secrets.DEVIN_ORG_ID }}
+          DEVIN_OBS_DATABASE_URL: ${{ secrets.DEVIN_OBS_DATABASE_URL }}
+          DEVIN_OBS_SOURCE: github-actions
+        run: |
+          if [ -n "$DEVIN_OBS_DATABASE_URL" ]; then pip install --quiet psycopg2-binary; fi
+          python scripts/devin_observability.py collect --json devin-obs-snapshot.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: devin-obs-snapshot
+          path: devin-obs-snapshot.json
+
   report:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 7 * * *'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
