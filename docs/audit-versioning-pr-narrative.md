@@ -381,6 +381,19 @@ Recorded while landing PRs 1–5 (`lcpz/superset#8`–`#12`).
 - PR 6 (cross-trail correlation id on `Query`/`ReportExecutionLog`
   transactions, SIP-59 migration) remains future work; PR 5 flags query
   correlation as heuristic until it lands.
+- Version history is not bounded database-side. `_asset_evidence`
+  (`superset/versioning/evidence.py`) calls `VersionDAO.list_versions`, which
+  materializes the entity's full version history plus all `version_changes`
+  before `record_limit` slices in Python (`superset/versioning/queries.py`
+  `list_versions`, no `LIMIT`/`OFFSET`). This reuses the same path as the
+  existing `/versions/` REST endpoints and is bounded in practice by the
+  default 30-day retention; with retention disabled a large history is fully
+  loaded, once per asset (dataset + up to 25 charts + 25 dashboards per page).
+  Retention-driven omissions are disclosed via `coverage.retention` but do not
+  flip `coverage.complete`. Follow-up: a DB-side bounded `list_versions`
+  variant (order by `transaction_id`, `LIMIT record_limit + 1`, report
+  `truncated`), mirroring `get_version`'s `.offset().limit(1)` and the activity
+  path's per-kind fetch ceiling, shared with the `/versions/` endpoints.
 
 ## References
 

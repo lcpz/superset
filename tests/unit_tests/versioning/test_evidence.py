@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -224,11 +224,27 @@ def test_before_after_snapshots_addressed_by_stable_handles() -> None:
 
 @pytest.mark.usefixtures("evidence_env")
 def test_no_since_means_no_before_snapshot() -> None:
-    evidence = _build(since=None, until=None)
+    # `until` is pinned to a fixed instant past every fixture version so the
+    # window covers them all regardless of wall-clock time (an omitted `until`
+    # resolves to `now`, which would exclude future-dated fixture rows).
+    evidence = _build(since=None, until=datetime(2099, 1, 1))
     chart_asset = evidence["assets"][1]
     assert chart_asset["before"] is None
-    assert chart_asset["after"]["transaction_id"] == 104  # latest overall
+    assert chart_asset["after"]["transaction_id"] == 104  # latest in window
     assert chart_asset["versions_in_window"]["count"] == 5
+
+
+@pytest.mark.usefixtures("evidence_env")
+def test_open_ended_until_is_pinned_to_a_concrete_instant() -> None:
+    pinned = datetime(2026, 8, 25)
+    with patch(f"{MOD}.datetime") as fake_datetime:
+        fake_datetime.now.return_value = pinned.replace(tzinfo=timezone.utc)
+        evidence = _build(since=None, until=None)
+    # `until` is recorded as the resolved instant, not null, so the covered
+    # window is reproducible from the response.
+    assert evidence["window"]["until"] == pinned.isoformat()
+    # `after` is the last version at/before the pinned instant (104 is later).
+    assert evidence["assets"][1]["after"]["transaction_id"] == 103
 
 
 @pytest.mark.usefixtures("evidence_env")

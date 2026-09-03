@@ -342,6 +342,13 @@ def build_dataset_migration_evidence(
         raise EvidenceParamsError("since must not be after until")
     record_limit = max(1, min(record_limit, MAX_RECORDS_PER_COLLECTION))
 
+    # Pin an open-ended window to a concrete instant so the covered range —
+    # and therefore the digest, `after` snapshot and execution rows — is
+    # reproducible from the recorded params. Naive UTC to match `since` and
+    # `retention_disclosure` (see ``_epoch_ms``).
+    if until is None:
+        until = datetime.now(timezone.utc).replace(tzinfo=None)
+
     inventory = get_dataset_related_objects(dataset, page=page, page_size=page_size)
     chart_ids = [c["id"] for c in inventory["charts"]["result"]]
     dashboard_ids = [d["id"] for d in inventory["dashboards"]["result"]]
@@ -422,7 +429,8 @@ def build_dataset_migration_evidence(
             "notes": [
                 "before = last version issued before `since` (null when since is "
                 "unset or nothing precedes it); after = last version issued at or "
-                "before `until` (or the latest)",
+                "before `until` (an omitted `until` is pinned to the export "
+                "instant recorded in window.until)",
                 "versions/activity older than retention.history_begins_at may have "
                 "been pruned; absence is not proof of no change",
                 "digest proves byte-integrity of this bundle, not truthfulness of "
