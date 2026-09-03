@@ -265,7 +265,7 @@ def _pull_state(gh: GitHubClient, number: int) -> PullState:
     )
 
 
-def _classify(row: IssueRow, now: datetime) -> str:
+def _classify(row: IssueRow, now: datetime, sessions_known: bool = True) -> str:
     labels = set(row.labels)
     session_states = {s.get("status") for s in row.sessions}
     if any(label.startswith(LABEL_BLOCKED_PREFIX) for label in labels):
@@ -281,6 +281,8 @@ def _classify(row: IssueRow, now: datetime) -> str:
     if LABEL_READY in labels:
         if row.sessions:
             return "finished-no-label"
+        if not sessions_known:
+            return "ready (session data unavailable)"
         if row.ready_at and now - row.ready_at > DISPATCH_GRACE:
             return "dispatch-missed"
         return "queued"
@@ -301,8 +303,13 @@ def _classify_in_progress(
 
 
 def build_rows(
-    gh: GitHubClient, sessions: list[JsonDict], now: datetime
+    gh: GitHubClient,
+    sessions: list[JsonDict],
+    now: datetime,
+    sessions_known: bool = True,
 ) -> list[IssueRow]:
+    """Join issues with sessions; ``sessions_known`` is False when the Devin
+    session list could not be fetched, so no status is inferred from its absence."""
     rows: list[IssueRow] = []
     for issue in gh.issues(since=now - LOOKBACK):
         number = issue["number"]
@@ -338,7 +345,7 @@ def build_rows(
             row.pull = _pull_state(gh, max(pr_numbers))
             row.evidence.extend(row.pull.evidence)
 
-        row.status = _classify(row, now)
+        row.status = _classify(row, now, sessions_known)
         rows.append(row)
     return rows
 
@@ -454,17 +461,24 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(tz=timezone.utc)
 
     devin_error = ""
+    sessions: list[JsonDict] = []
+    sessions_known = devin.enabled
+    automation: JsonDict | None = None
     try:
         sessions = devin.sessions(automation_id or None)
-        automation = devin.automation(automation_id)
     except (RuntimeError, urllib.error.URLError) as exc:
         # Report from GitHub evidence only; the health line explains the gap.
         print(f"::warning::Devin API unavailable: {exc}", file=sys.stderr)
         devin_error = str(exc)
-        devin.enabled = False
-        sessions, automation = [], None
-    rows = build_rows(gh, sessions, now)
-    health, notes = automation_health(automation, rows, devin.enabled)
+        sessions_known = False
+    else:
+        try:
+            automation = devin.automation(automation_id)
+        except (RuntimeError, urllib.error.URLError) as exc:
+            print(f"::warning::Devin automation lookup failed: {exc}", file=sys.stderr)
+            devin_error = str(exc)
+    rows = build_rows(gh, sessions, now, sessions_known)
+    health, notes = automation_health(automation, rows, sessions_known)
     if devin_error:
         health = "unknown (Devin API error)"
         notes.append(
