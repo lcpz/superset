@@ -16,6 +16,7 @@
 # under the License.
 import importlib.util
 import sys
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -472,3 +473,75 @@ def test_recent_devin_progress_comment_suppresses_finding() -> None:
     assert [f.kind for f in obs.derive_findings(_snapshot([old]), NOW)] == [
         "ci-failed-unattended"
     ]
+
+
+def test_old_snapshot_defaults_new_pull_activity_fields() -> None:
+    pull = asdict(_pr())
+    pull.pop("failed_at")
+    pull.pop("last_devin_comment_at")
+    snapshot = obs._snapshot_from_json(
+        {
+            "collected_at": obs._iso(NOW),
+            "repo": "lcpz/superset",
+            "devin_api_enabled": False,
+            "pulls": [pull],
+            "check_runs": [],
+            "sessions": [],
+            "automations": [],
+            "findings": [],
+        }
+    )
+    assert snapshot.pulls[0].failed_at is None
+    assert snapshot.pulls[0].last_devin_comment_at is None
+
+
+def test_pull_request_insert_and_schema_support_activity_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.executed: list[tuple[str, Any]] = []
+
+        def __enter__(self) -> "FakeCursor":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def execute(self, query: str, params: Any = None) -> None:
+            self.executed.append((query, params))
+
+    class FakeConnection:
+        def __init__(self, cursor: FakeCursor) -> None:
+            self.cursor_instance = cursor
+
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def cursor(self) -> FakeCursor:
+            return self.cursor_instance
+
+        def close(self) -> None:
+            return None
+
+    cursor = FakeCursor()
+    connection = FakeConnection(cursor)
+    psycopg2 = ModuleType("psycopg2")
+    psycopg2.connect = lambda database_url: connection  # type: ignore[attr-defined]
+    extras = ModuleType("psycopg2.extras")
+    extras.execute_values = lambda *args: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psycopg2", psycopg2)
+    monkeypatch.setitem(sys.modules, "psycopg2.extras", extras)
+
+    obs.load_snapshot("postgresql://unused", _snapshot([_pr()]), "test")
+
+    assert "ADD COLUMN IF NOT EXISTS last_devin_comment_at TIMESTAMPTZ" in obs.DDL
+    pull_insert = next(
+        query
+        for query, _ in cursor.executed
+        if "INSERT INTO devin_obs.pull_requests" in query
+    )
+    assert "last_devin_comment_at" in pull_insert.split("VALUES", 1)[0]

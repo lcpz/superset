@@ -836,6 +836,8 @@ CREATE TABLE IF NOT EXISTS devin_obs.pull_requests (
   last_human_review_at TIMESTAMPTZ, review_threads INT, unresolved_threads INT,
   oldest_unresolved_at TIMESTAMPTZ, remediation TEXT, last_seen_at TIMESTAMPTZ
 );
+ALTER TABLE devin_obs.pull_requests
+  ADD COLUMN IF NOT EXISTS last_devin_comment_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS devin_obs.pull_request_history (
   number INT, collected_at TIMESTAMPTZ, state TEXT, checks TEXT,
   approved BOOLEAN, unresolved_threads INT, remediation TEXT,
@@ -919,7 +921,14 @@ def load_snapshot(database_url: str, snapshot: Snapshot, source: str) -> None:
             for pr in snapshot.pulls:
                 rem = remediation(pr)
                 cur.execute(
-                    """INSERT INTO devin_obs.pull_requests VALUES
+                    """INSERT INTO devin_obs.pull_requests
+                       (number, title, url, author, branch, state, draft,
+                        created_at, updated_at, merged_at, head_sha, last_commit_at,
+                        failed_at, last_devin_comment_at, checks, failed_checks,
+                        approved, changes_requested, last_human_review_at,
+                        review_threads, unresolved_threads, oldest_unresolved_at,
+                        remediation, last_seen_at)
+                       VALUES
                        (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (number) DO UPDATE SET
                          title=EXCLUDED.title, state=EXCLUDED.state,
@@ -1099,7 +1108,10 @@ def _snapshot_from_json(data: JsonDict) -> Snapshot:
         collected_at=data["collected_at"],
         repo=data["repo"],
         devin_api_enabled=data["devin_api_enabled"],
-        pulls=[PullRow(**p) for p in data["pulls"]],
+        pulls=[
+            PullRow(**{"failed_at": None, "last_devin_comment_at": None, **p})
+            for p in data["pulls"]
+        ],
         check_runs=[CheckRun(**c) for c in data["check_runs"]],
         sessions=[SessionRow(**s) for s in data["sessions"]],
         automations=[AutomationRow(**a) for a in data["automations"]],
