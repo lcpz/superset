@@ -96,6 +96,52 @@ def test_summarise_checks_ignores_informational_and_flags_failures() -> None:
     assert obs._summarise_checks([]) == ("none", [])
 
 
+def test_parse_epoch_timestamp_and_iso_round_trip() -> None:
+    expected = datetime(2026, 9, 3, 11, 49, 11, tzinfo=timezone.utc)
+    parsed = obs._parse_ts(1788436151)
+
+    assert parsed == expected
+    assert obs._parse_ts(obs._iso(parsed)) == expected
+
+
+def test_session_row_normalizes_epoch_timestamps() -> None:
+    row = obs._session_row(
+        "lcpz/superset",
+        {
+            "session_id": "session-1",
+            "created_at": 1788436151,
+            "updated_at": 1788436152,
+        },
+    )
+
+    assert row.created_at == "2026-09-03T11:49:11+00:00"
+    assert row.updated_at == "2026-09-03T11:49:12+00:00"
+
+
+def test_snapshot_from_json_normalizes_epoch_timestamps() -> None:
+    snapshot = obs._snapshot_from_json(
+        {
+            "collected_at": "2026-09-03T12:00:00+00:00",
+            "repo": "lcpz/superset",
+            "devin_api_enabled": True,
+            "pulls": [],
+            "check_runs": [],
+            "sessions": [
+                {
+                    "session_id": "session-1",
+                    "created_at": 1788436151,
+                    "updated_at": 1788436152,
+                }
+            ],
+            "automations": [],
+            "findings": [],
+        }
+    )
+
+    assert snapshot.sessions[0].created_at == "2026-09-03T11:49:11+00:00"
+    assert snapshot.sessions[0].updated_at == "2026-09-03T11:49:12+00:00"
+
+
 def test_dispatch_markers_are_parsed_from_hidden_comments() -> None:
     marker = {"key": "k1", "kind": "ci-failed-unattended", "session_id": "s"}
     comments = [
