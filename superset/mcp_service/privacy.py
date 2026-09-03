@@ -73,6 +73,7 @@ DATA_MODEL_METADATA_ERROR_MESSAGE = (
 CHART_DATA_MODEL_COLUMNS = frozenset(
     {
         "catalog_perm",
+        "dataset_uuid",
         "datasource_id",
         "datasource_name",
         "datasource_type",
@@ -183,6 +184,8 @@ def redact_chart_data_model_fields(chart_info: Any) -> Any:
     if isinstance(chart_info, ChartInfo):
         return chart_info.model_copy(
             update={
+                "datasource_id": None,
+                "dataset_uuid": None,
                 "datasource_name": None,
                 "datasource_type": None,
                 "filters": None,

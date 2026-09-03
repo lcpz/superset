@@ -24,6 +24,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+import uuid as uuid_lib
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Protocol
 
@@ -82,8 +83,10 @@ class ChartLike(Protocol):
     id: int
     slice_name: str | None
     viz_type: str | None
+    datasource_id: int | None
     datasource_name: str | None
     datasource_type: str | None
+    table: Any | None  # SqlaTable when table-backed
     url: str | None
     description: str | None
     cache_timeout: int | None
@@ -118,8 +121,23 @@ class ChartInfo(BaseModel):
             "fall back to viz_type when this field is null."
         ),
     )
+    datasource_id: int | None = Field(
+        None,
+        description=(
+            "Numeric id of the datasource the chart reads from. For table-backed "
+            "charts this equals the dataset id returned by list_datasets / "
+            "get_dataset_info; prefer dataset_uuid as the stable handle."
+        ),
+    )
     datasource_name: str | None = Field(None, description="Datasource name")
     datasource_type: str | None = Field(None, description="Datasource type")
+    dataset_uuid: str | None = Field(
+        None,
+        description=(
+            "UUID of the backing dataset when the chart is table-backed; null for "
+            "non-table datasources or when the dataset no longer exists."
+        ),
+    )
     url: str | None = Field(None, description="Chart explore page URL")
     description: str | None = Field(None, description="Chart description")
     cache_timeout: int | None = Field(None, description="Cache timeout")
@@ -278,8 +296,10 @@ DEFAULT_GET_CHART_INFO_COLUMNS: List[str] = [
     "id",
     "slice_name",
     "viz_type",
+    "datasource_id",
     "datasource_name",
     "datasource_type",
+    "dataset_uuid",
     "url",
     "description",
     "cache_timeout",
@@ -476,6 +496,29 @@ CHART_FORM_DATA_EXCLUDED_FIELD_NAMES = frozenset(
 )
 
 
+def _chart_datasource_id(chart: ChartLike) -> int | None:
+    datasource_id = getattr(chart, "datasource_id", None)
+    return datasource_id if isinstance(datasource_id, int) else None
+
+
+def _chart_dataset_uuid(chart: ChartLike) -> str | None:
+    """Return the backing dataset UUID for table-backed charts.
+
+    Mirrors ``superset/commands/chart/export.py`` which derives ``dataset_uuid``
+    from ``model.table.uuid``. Non-table datasources and dangling references
+    yield ``None`` rather than a guessed value.
+    """
+    if getattr(chart, "datasource_type", None) != "table":
+        return None
+    table = getattr(chart, "table", None)
+    table_uuid = getattr(table, "uuid", None) if table is not None else None
+    if isinstance(table_uuid, uuid_lib.UUID):
+        return str(table_uuid)
+    if isinstance(table_uuid, str) and table_uuid:
+        return table_uuid
+    return None
+
+
 def serialize_chart_object(chart: ChartLike | None) -> ChartInfo | None:
     if not chart:
         return None
@@ -522,8 +565,10 @@ def serialize_chart_object(chart: ChartLike | None) -> ChartInfo | None:
         slice_name=getattr(chart, "slice_name", None),
         viz_type=_viz_type,
         chart_type_display_name=_display_name,
+        datasource_id=_chart_datasource_id(chart),
         datasource_name=getattr(chart, "datasource_name", None),
         datasource_type=getattr(chart, "datasource_type", None),
+        dataset_uuid=_chart_dataset_uuid(chart),
         url=chart_url,
         description=getattr(chart, "description", None),
         certified_by=getattr(chart, "certified_by", None),

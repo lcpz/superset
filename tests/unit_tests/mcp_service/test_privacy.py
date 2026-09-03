@@ -105,14 +105,18 @@ def test_redact_chart_data_model_fields_removes_restricted_fields() -> None:
     chart_info = ChartInfo(
         id=1,
         slice_name="Revenue",
+        datasource_id=12,
         datasource_name="sales",
         datasource_type="table",
+        dataset_uuid="11111111-2222-4333-8444-555555555555",
         filters={"time_range": "Last year"},
         form_data={"datasource": "1__table"},
     )
 
     redacted = redact_chart_data_model_fields(chart_info)
 
+    assert redacted.datasource_id is None
+    assert redacted.dataset_uuid is None
     assert redacted.datasource_name is None
     assert redacted.datasource_type is None
     assert redacted.filters is None
