@@ -2601,7 +2601,12 @@ class TestDatasetApi(SupersetTestCase):
         """
         self.login(ADMIN_USERNAME)
         table = self.get_birth_names_dataset()
-        uri = f"api/v1/dataset/{table.uuid}/migration_evidence/?page_size=2"
+        # An explicit ``until`` pins the window; an omitted one is pinned to
+        # the export instant, so two exports would never hash identically.
+        uri = (
+            f"api/v1/dataset/{table.uuid}/migration_evidence/"
+            "?page_size=2&until=2100-01-01T00:00:00Z"
+        )
         rv = self.get_assert_metric(uri, "migration_evidence")
         assert rv.status_code == 200
         assert rv.headers["Cache-Control"] == "no-store"

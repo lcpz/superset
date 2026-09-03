@@ -142,19 +142,18 @@ async def test_usage_fails_closed_on_access_errors(status: int, error_type: str)
 
 @pytest.mark.asyncio
 async def test_usage_reraises_unexpected_errors() -> None:
-    """Unexpected faults after the access gate are re-raised (not swallowed)
-    so the centralized middleware can log/sanitize them; the client sees a
-    ToolError with a sanitized generic message."""
+    """Unexpected faults after the access gate surface as a ToolError (not a
+    swallowed error payload) whose message never carries the raw exception
+    text; the original is chained as ``__cause__`` for logging."""
     with (
         patch(f"{TOOL}.resolve_audit_entity", return_value=(_dataset(), DATASET_UUID)),
         patch(
             "superset.datasets.related_objects.DatasetDAO.get_related_objects",
             side_effect=RuntimeError("boom: db connection string leaked"),
         ),
-        pytest.raises(ToolError) as exc,
+        pytest.raises(ToolError, match="Internal error in get_dataset_usage") as exc,
     ):
         await _call({"dataset_uuid": str(DATASET_UUID)})
-    # The raw exception message must not leak; the middleware sanitizes it.
     assert "boom: db connection string leaked" not in str(exc.value)
 
 
