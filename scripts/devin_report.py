@@ -279,16 +279,20 @@ def _classify(row: IssueRow, now: datetime, sessions_known: bool = True) -> str:
     if LABEL_IN_PROGRESS in labels:
         return _classify_in_progress(row, session_states, now)
     if LABEL_READY in labels:
-        if row.sessions:
-            return "finished-no-label"
-        if not sessions_known:
-            return "ready (session data unavailable)"
-        if row.ready_at and now - row.ready_at > DISPATCH_GRACE:
-            return "dispatch-missed"
-        return "queued"
+        return _classify_ready(row, now, sessions_known)
     if row.closed:
         return "closed"
     return "unlabeled"
+
+
+def _classify_ready(row: IssueRow, now: datetime, sessions_known: bool) -> str:
+    if row.sessions:
+        return "finished-no-label"
+    if not sessions_known:
+        return "ready (session data unavailable)"
+    if row.ready_at and now - row.ready_at > DISPATCH_GRACE:
+        return "dispatch-missed"
+    return "queued"
 
 
 def _classify_in_progress(
