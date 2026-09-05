@@ -30,6 +30,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryParamProvider } from 'use-query-params';
 import { ReactRouter5Adapter } from 'use-query-params/adapters/react-router-5';
 import AlertListComponent from 'src/pages/AlertReportList';
+import messageToastReducer from 'src/components/MessageToasts/reducers';
+import type { ToastMeta } from 'src/components/MessageToasts/types';
 import { SubjectType } from 'src/types/Subject';
 import getBootstrapData from 'src/utils/getBootstrapData';
 
@@ -181,8 +183,8 @@ const ENDPOINTS = {
 // -- Render helper --
 
 const renderAlertList = (props: Record<string, any> = {}) => {
-  const store = createStore();
-  return render(
+  const store = createStore({}, { messageToasts: messageToastReducer });
+  const result = render(
     <Provider store={store}>
       <MemoryRouter>
         <QueryParamProvider adapter={ReactRouter5Adapter}>
@@ -191,7 +193,13 @@ const renderAlertList = (props: Record<string, any> = {}) => {
       </MemoryRouter>
     </Provider>,
   );
+  return { ...result, store };
 };
+
+const getToastTexts = (store: ReturnType<typeof renderAlertList>['store']) =>
+  (
+    store.getState() as unknown as { messageToasts: ToastMeta[] }
+  ).messageToasts.map(toast => toast.text);
 
 // -- Dynamic list endpoint: returns alerts or reports based on URL filter --
 
@@ -554,6 +562,65 @@ test('trigger-now action calls execute API for owned alert', async () => {
   expect(fetchMock.callHistory.calls('execute-report')[0].url).toMatch(
     /\/report\/\d+\/execute/,
   );
+});
+
+test('trigger-now success toast is a complete sentence for alerts', async () => {
+  fetchMock.post(
+    'glob:*/api/v1/report/*/execute',
+    { execution_id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479', message: 'ok' },
+    { name: 'execute-report' },
+  );
+
+  const { store } = renderAlertList();
+  await screen.findByText('Weekly Sales Alert');
+
+  fireEvent.click(screen.getAllByTestId('trigger-now-action')[0]);
+
+  await waitFor(() => {
+    expect(getToastTexts(store)).toContain(
+      'Alert "Weekly Sales Alert" triggered successfully',
+    );
+  });
+});
+
+test('trigger-now success toast is a complete sentence for reports', async () => {
+  fetchMock.post(
+    'glob:*/api/v1/report/*/execute',
+    { execution_id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479', message: 'ok' },
+    { name: 'execute-report' },
+  );
+
+  const { store } = renderAlertList({ isReportEnabled: true });
+  await screen.findByText('Weekly Dashboard Report');
+
+  fireEvent.click(screen.getAllByTestId('trigger-now-action')[0]);
+
+  await waitFor(() => {
+    expect(getToastTexts(store)).toContain(
+      'Report "Weekly Dashboard Report" triggered successfully',
+    );
+  });
+});
+
+test('trigger-now failure toast is a complete sentence for alerts', async () => {
+  fetchMock.post(
+    'glob:*/api/v1/report/*/execute',
+    { status: 500, body: { message: 'boom' } },
+    { name: 'execute-report' },
+  );
+
+  const { store } = renderAlertList();
+  await screen.findByText('Weekly Sales Alert');
+
+  fireEvent.click(screen.getAllByTestId('trigger-now-action')[0]);
+
+  await waitFor(() => {
+    expect(
+      getToastTexts(store).some(text =>
+        text.startsWith('Failed to trigger alert "Weekly Sales Alert": '),
+      ),
+    ).toBe(true);
+  });
 });
 
 test('trigger-now action does not duplicate in-flight requests', async () => {

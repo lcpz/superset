@@ -195,19 +195,26 @@ function AlertList({
         alertId,
         () => {
           addSuccessToast(
-            t('%(alertType)s "%(alertName)s" triggered successfully', {
-              alertType: alert.type,
-              alertName: alert.name,
-            }),
+            alert.type === 'Alert'
+              ? t('Alert "%(name)s" triggered successfully', {
+                  name: alert.name,
+                })
+              : t('Report "%(name)s" triggered successfully', {
+                  name: alert.name,
+                }),
           );
         },
         error => {
           addDangerToast(
-            t('Failed to trigger %(alertType)s "%(alertName)s": %(error)s', {
-              alertType: alert.type,
-              alertName: alert.name,
-              error,
-            }),
+            alert.type === 'Alert'
+              ? t('Failed to trigger alert "%(name)s": %(error)s', {
+                  name: alert.name,
+                  error,
+                })
+              : t('Failed to trigger report "%(name)s": %(error)s', {
+                  name: alert.name,
+                  error,
+                }),
           );
         },
       )
