@@ -217,7 +217,7 @@ class PullRow:
     checks: str
     approved: bool
     updated_at: datetime | None
-    issues: list[int] = field(default_factory=list)
+    refs: list[int] = field(default_factory=list)  # #n / issues/n mentions
 
 
 @dataclass
@@ -280,8 +280,11 @@ def _pull_state_from(gh: GitHubClient, pull: JsonDict) -> PullState:
         checks = "failure"
     latest: dict[str, str] = {}
     for review in gh.reviews(number):
+        login = (review.get("user") or {}).get("login", "")
+        if login.endswith("[bot]"):
+            continue
         if review.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
-            latest[(review.get("user") or {}).get("login", "")] = review["state"]
+            latest[login] = review["state"]
     approved = "APPROVED" in latest.values() and "CHANGES_REQUESTED" not in (
         latest.values()
     )
@@ -387,7 +390,9 @@ def build_rows(
     return rows
 
 
-def _issue_numbers_from_text(repo: str, text: str) -> set[int]:
+def _ref_numbers_from_text(repo: str, text: str) -> set[int]:
+    """``#n`` and ``/issues/n`` mentions; GitHub numbers issues and PRs together,
+    so a reference may be either."""
     numbers: set[int] = set()
     for match in re.finditer(
         rf"(?:(?<!\w)#|https://github\.com/{re.escape(repo)}/issues/)(\d+)(?!\d)",
@@ -415,8 +420,8 @@ def build_pull_rows(gh: GitHubClient, now: datetime) -> list[PullRow]:
                 checks=state.checks,
                 approved=state.approved,
                 updated_at=_parse_ts(pull.get("updated_at")),
-                issues=sorted(
-                    _issue_numbers_from_text(gh.repo, pull.get("body") or "")
+                refs=sorted(
+                    _ref_numbers_from_text(gh.repo, pull.get("body") or "")
                     - {pull["number"]}
                 ),
             )
@@ -529,11 +534,11 @@ def render(
     lines += [
         "",
         "### Pull requests",
-        "| PR | State | CI | Approved | Issue | Updated |",
+        "| PR | State | CI | Approved | Refs | Updated |",
         "|---|---|---|---|---|---|",
     ]
     for pull in sorted(pulls, key=lambda p: p.number, reverse=True):
-        issue_cell = " ".join(f"#{n}" for n in pull.issues) or "—"
+        issue_cell = " ".join(f"#{n}" for n in pull.refs) or "—"
         updated = pull.updated_at.strftime("%Y-%m-%d") if pull.updated_at else "—"
         lines.append(
             f"| [#{pull.number}]({pull.url}) {_md_cell(pull.title)} | **{pull.state}** "

@@ -243,7 +243,7 @@ class _PullGitHub(_StubGitHub):
     def reviews(self, number: int) -> list[dict[str, object]]:
         if number == 21:
             return [{"state": "APPROVED", "user": {"login": "h"}}]
-        return []
+        return [{"state": "APPROVED", "user": {"login": "devin-ai-integration[bot]"}}]
 
 
 def test_pull_rows_cover_prs_without_issues() -> None:
@@ -252,10 +252,11 @@ def test_pull_rows_cover_prs_without_issues() -> None:
     assert by_number[21].state == "merged"
     assert by_number[21].checks == "success"
     assert by_number[21].approved is True
-    assert by_number[21].issues == [7, 8]
+    assert by_number[21].refs == [7, 8]
     assert by_number[22].state == "draft"
     assert by_number[22].checks == "failure"
-    assert by_number[22].issues == []
+    assert by_number[22].approved is False  # bot approvals do not count
+    assert by_number[22].refs == []
 
 
 def test_render_lists_every_devin_pr() -> None:

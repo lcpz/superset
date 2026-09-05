@@ -110,7 +110,8 @@ The **Issues** table only covers issues that were labeled `devin:ready`. Session
 started from chat, Slack, or other automations open PRs without any issue, so the
 **Pull requests** table lists every PR whose head branch starts with `devin/` and
 that was updated within the lookback window: state (`open`/`draft`/`merged`/
-`closed`), CI, human approval, issues referenced in the PR body, and last update.
+`closed`), CI, human approval (bot reviews are ignored), `#n` references in the
+PR body (**Refs** — issues or PRs, GitHub numbers them together), and last update.
 The portfolio line summarises the counts and how many open PRs have failing CI.
 
 ### Which evidence supports each status?
