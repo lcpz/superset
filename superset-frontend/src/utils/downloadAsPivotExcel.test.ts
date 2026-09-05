@@ -18,6 +18,7 @@
  */
 import type { WorkBook } from 'xlsx';
 import { getNumberFormatterRegistry } from '@superset-ui/core';
+import { logging } from '@apache-superset/core/utils';
 import exportPivotExcel from './downloadAsPivotExcel';
 
 const mockWriteFile = jest.fn();
@@ -49,6 +50,19 @@ function exportRowAndGetSheet(cells: string[]): WorkBook['Sheets'][string] {
   const workbook = mockWriteFile.mock.calls.at(-1)?.[0] as WorkBook;
   return workbook.Sheets[workbook.SheetNames[0]];
 }
+
+test('logs an error and does not write a file when the table element is missing', () => {
+  const errorSpy = jest.spyOn(logging, 'error').mockImplementation(() => {});
+  document.body.innerHTML = '<div id="chart"></div>';
+
+  expect(() => exportPivotExcel('#chart .pvtTable', 'export')).not.toThrow();
+
+  expect(mockWriteFile).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringContaining('#chart .pvtTable'),
+  );
+  errorSpy.mockRestore();
+});
 
 test('preserves locale-formatted numbers exactly as rendered, without SheetJS reinterpreting them', () => {
   const sheet = exportRowAndGetSheet(['1.234,56', '12,50%', '3.500']);
