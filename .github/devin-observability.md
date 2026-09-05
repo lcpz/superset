@@ -36,8 +36,8 @@ and shown in the run summary.
 | Repository secret | `DEVIN_API_KEY` | Devin v3 service-user key with `ViewOrgSessions` |
 | Repository secret | `DEVIN_ORG_ID` | `org-…` |
 | Repository variable | `DEVIN_AUTOMATION_ID` | `auto-…` (the `devin:ready` automation) |
-| Repository variable | `DEVIN_BOARD_ISSUE` | optional; issue number hosting the board (auto-created and labeled `devin:status-board` otherwise) |
-| Repository variable | `DEVIN_REPORT_LOOKBACK_DAYS` | optional; only issues updated within this window are scanned (default 90) |
+| Repository variable | `DEVIN_BOARD_ISSUE` | optional; issue number hosting the board. Otherwise the most recent `devin:status-board` issue is reused, open or closed; a new one is created only when none exists |
+| Repository variable | `DEVIN_REPORT_LOOKBACK_DAYS` | optional; only issues and PRs updated within this window are scanned (default 90) |
 
 Any explicitly selected board issue (variable or manual input) must carry the
 `devin:status-board` label, otherwise the run fails instead of posting.
@@ -103,6 +103,15 @@ survive label clean-up). Status precedence:
   so the gate lets the new session claim the issue.
 * **Consumption**: `ACUs` per issue is the sum of `acus_consumed` over matched
   sessions; the portfolio total covers every session spawned by the automation.
+
+### Which PRs did Devin open, regardless of how the session started?
+
+The **Issues** table only covers issues that were labeled `devin:ready`. Sessions
+started from chat, Slack, or other automations open PRs without any issue, so the
+**Pull requests** table lists every PR whose head branch starts with `devin/` and
+that was updated within the lookback window: state (`open`/`draft`/`merged`/
+`closed`), CI, human approval, issues referenced in the PR body, and last update.
+The portfolio line summarises the counts and how many open PRs have failing CI.
 
 ### Which evidence supports each status?
 

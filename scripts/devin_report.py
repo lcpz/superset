@@ -60,6 +60,7 @@ LABEL_READY = "devin:ready"
 LABEL_IN_PROGRESS = "devin:in-progress"
 LABEL_DONE = "devin:done"
 LABEL_BLOCKED_PREFIX = "blocked-"
+DEVIN_BRANCH_PREFIX = "devin/"
 SESSION_TAG = "issue-automation"
 
 STALE_IN_PROGRESS = timedelta(hours=6)
@@ -132,6 +133,19 @@ class GitHubClient:
     def pull(self, number: int) -> JsonDict:
         return _get_json(f"{GITHUB_API}/repos/{self.repo}/pulls/{number}", self.headers)
 
+    def devin_pulls(self, since: datetime) -> list[JsonDict]:
+        """PRs from ``devin/*`` branches updated since ``since``, any state."""
+        pulls = self._paginate(
+            f"/repos/{self.repo}/pulls",
+            {"state": "all", "sort": "updated", "direction": "desc"},
+        )
+        return [
+            p
+            for p in pulls
+            if p["head"]["ref"].startswith(DEVIN_BRANCH_PREFIX)
+            and (_parse_ts(p.get("updated_at")) or since) >= since
+        ]
+
     def check_runs(self, sha: str) -> list[JsonDict]:
         data = _get_json(
             f"{GITHUB_API}/repos/{self.repo}/commits/{sha}/check-runs?per_page=100",
@@ -194,6 +208,19 @@ class PullState:
 
 
 @dataclass
+class PullRow:
+    number: int
+    title: str
+    url: str
+    branch: str
+    state: str  # open | draft | merged | closed
+    checks: str
+    approved: bool
+    updated_at: datetime | None
+    issues: list[int] = field(default_factory=list)
+
+
+@dataclass
 class IssueRow:
     number: int
     title: str
@@ -236,7 +263,11 @@ def _pr_numbers_from_text(repo: str, text: str) -> set[int]:
 
 
 def _pull_state(gh: GitHubClient, number: int) -> PullState:
-    pull = gh.pull(number)
+    return _pull_state_from(gh, gh.pull(number))
+
+
+def _pull_state_from(gh: GitHubClient, pull: JsonDict) -> PullState:
+    number = pull["number"]
     state = "merged" if pull.get("merged_at") else pull.get("state", "open")
     runs = gh.check_runs(pull["head"]["sha"])
     if not runs:
@@ -356,6 +387,43 @@ def build_rows(
     return rows
 
 
+def _issue_numbers_from_text(repo: str, text: str) -> set[int]:
+    numbers: set[int] = set()
+    for match in re.finditer(
+        rf"(?:(?<!\w)#|https://github\.com/{re.escape(repo)}/issues/)(\d+)(?!\d)",
+        text or "",
+    ):
+        numbers.add(int(match.group(1)))
+    return numbers
+
+
+def build_pull_rows(gh: GitHubClient, now: datetime) -> list[PullRow]:
+    """Every ``devin/*`` PR in the lookback window, whether or not an issue
+    drove it; sessions started from chat or other automations open PRs too."""
+    rows: list[PullRow] = []
+    for pull in gh.devin_pulls(since=now - LOOKBACK):
+        state = _pull_state_from(gh, pull)
+        if state.state == "open" and pull.get("draft"):
+            state.state = "draft"
+        rows.append(
+            PullRow(
+                number=pull["number"],
+                title=pull.get("title", ""),
+                url=pull["html_url"],
+                branch=pull["head"]["ref"],
+                state=state.state,
+                checks=state.checks,
+                approved=state.approved,
+                updated_at=_parse_ts(pull.get("updated_at")),
+                issues=sorted(
+                    _issue_numbers_from_text(gh.repo, pull.get("body") or "")
+                    - {pull["number"]}
+                ),
+            )
+        )
+    return rows
+
+
 def _session_matches(
     repo: str, session: JsonDict, issue_number: int, pr_numbers: set[int]
 ) -> bool:
@@ -402,10 +470,18 @@ def render(
     health_notes: list[str],
     sessions: list[JsonDict],
     now: datetime,
+    pulls: list[PullRow] | None = None,
 ) -> str:
+    pulls = pulls or []
     counts: dict[str, int] = {}
     for row in rows:
         counts[row.status] = counts.get(row.status, 0) + 1
+    pull_counts: dict[str, int] = {}
+    for pull in pulls:
+        pull_counts[pull.state] = pull_counts.get(pull.state, 0) + 1
+    failing = sum(
+        1 for p in pulls if p.state in {"open", "draft"} and p.checks == "failure"
+    )
     total_acus = round(sum(float(s.get("acus_consumed") or 0) for s in sessions), 2)
     terminal = sum(counts.get(s, 0) for s in ("done", "merged", "failed-ci"))
     progress = f"{terminal}/{len(rows)}" if rows else "0/0"
@@ -427,6 +503,9 @@ def render(
         + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"),
         f"- Controlled replays (re-labels): {sum(r.replays for r in rows)}",
         f"- Sessions observed: {len(sessions)} · ACUs consumed: {total_acus}",
+        f"- Devin PRs (last {LOOKBACK.days}d): {len(pulls)} · "
+        + (", ".join(f"{k}={v}" for k, v in sorted(pull_counts.items())) or "none")
+        + f" · open with failing CI: {failing}",
         "",
         "### Issues",
         "| Issue | Status | Sessions | Replays | ACUs | PR | CI | Approved | "
@@ -447,6 +526,22 @@ def render(
             f"{len(row.sessions)} | {row.replays} | {row.acus} | {pr_cell} | "
             f"{ci_cell} | {approved_cell} | {evidence} |"
         )
+    lines += [
+        "",
+        "### Pull requests",
+        "| PR | State | CI | Approved | Issue | Updated |",
+        "|---|---|---|---|---|---|",
+    ]
+    for pull in sorted(pulls, key=lambda p: p.number, reverse=True):
+        issue_cell = " ".join(f"#{n}" for n in pull.issues) or "—"
+        updated = pull.updated_at.strftime("%Y-%m-%d") if pull.updated_at else "—"
+        lines.append(
+            f"| [#{pull.number}]({pull.url}) {_md_cell(pull.title)} | **{pull.state}** "
+            f"| {pull.checks} | {'yes' if pull.approved else 'no'} | {issue_cell} | "
+            f"{updated} |"
+        )
+    if not pulls:
+        lines.append("| — | — | — | — | — | — |")
     lines += [
         "",
         "Status definitions and replay procedure: `.github/devin-observability.md`.",
@@ -485,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
         except (RuntimeError, OSError, json.JSONDecodeError) as exc:
             print(f"::warning::Devin automation lookup failed: {exc}", file=sys.stderr)
     rows = build_rows(gh, sessions, now, sessions_known)
+    pulls = build_pull_rows(gh, now)
     health, notes = automation_health(automation, rows, sessions_known)
     if devin_error:
         health = "unknown (Devin API error)"
@@ -494,7 +590,7 @@ def main(argv: list[str] | None = None) -> int:
         if " -> 403" in devin_error:
             detail += " (check the service user's ViewOrgSessions permission)"
         notes.append(f"Devin API: {detail}")
-    report = render(repo, rows, health, notes, sessions, now)
+    report = render(repo, rows, health, notes, sessions, now, pulls)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as handle:
@@ -503,7 +599,15 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(report)
     if args.json_path:
         with open(args.json_path, "w", encoding="utf-8") as handle:
-            json.dump([asdict(r) for r in rows], handle, default=str, indent=2)
+            json.dump(
+                {
+                    "issues": [asdict(r) for r in rows],
+                    "pulls": [asdict(p) for p in pulls],
+                },
+                handle,
+                default=str,
+                indent=2,
+            )
     return 0
 
 

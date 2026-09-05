@@ -143,6 +143,9 @@ class _StubGitHub:
     def issues(self, since: datetime) -> list[dict[str, object]]:
         return []
 
+    def devin_pulls(self, since: datetime) -> list[dict[str, object]]:
+        return []
+
 
 class _StubDevin:
     def __init__(self, enabled: bool, sessions_exc: Exception | None) -> None:
@@ -199,3 +202,74 @@ def test_main_publishes_board_when_devin_healthy(
     out = capsys.readouterr()
     assert "healthy" in out.out
     assert "Devin API error" not in out.out
+
+
+# --- pull request section -------------------------------------------------
+
+
+class _PullGitHub(_StubGitHub):
+    """Two devin/* PRs, neither driven by a devin:ready issue."""
+
+    def devin_pulls(self, since: datetime) -> list[dict[str, object]]:
+        return [
+            {
+                "number": 21,
+                "title": "fix(ci): accept epoch timestamps",
+                "html_url": "https://github.com/o/r/pull/21",
+                "head": {"ref": "devin/1-fix", "sha": "a"},
+                "state": "closed",
+                "merged_at": "2026-01-01T10:00:00Z",
+                "updated_at": "2026-01-01T10:00:00Z",
+                "body": "Closes #7 and https://github.com/o/r/issues/8",
+                "draft": False,
+            },
+            {
+                "number": 22,
+                "title": "test(ci): register module",
+                "html_url": "https://github.com/o/r/pull/22",
+                "head": {"ref": "devin/2-test", "sha": "b"},
+                "state": "open",
+                "merged_at": None,
+                "updated_at": "2026-01-01T11:00:00Z",
+                "body": None,
+                "draft": True,
+            },
+        ]
+
+    def check_runs(self, sha: str) -> list[dict[str, object]]:
+        conclusion = "success" if sha == "a" else "failure"
+        return [{"status": "completed", "conclusion": conclusion}]
+
+    def reviews(self, number: int) -> list[dict[str, object]]:
+        if number == 21:
+            return [{"state": "APPROVED", "user": {"login": "h"}}]
+        return []
+
+
+def test_pull_rows_cover_prs_without_issues() -> None:
+    rows = devin_report.build_pull_rows(_PullGitHub(), NOW)
+    by_number = {r.number: r for r in rows}
+    assert by_number[21].state == "merged"
+    assert by_number[21].checks == "success"
+    assert by_number[21].approved is True
+    assert by_number[21].issues == [7, 8]
+    assert by_number[22].state == "draft"
+    assert by_number[22].checks == "failure"
+    assert by_number[22].issues == []
+
+
+def test_render_lists_every_devin_pr() -> None:
+    pulls = devin_report.build_pull_rows(_PullGitHub(), NOW)
+    out = devin_report.render("o/r", [], "healthy", [], [], NOW, pulls)
+    assert "### Pull requests" in out
+    assert "[#21](https://github.com/o/r/pull/21)" in out
+    assert "[#22](https://github.com/o/r/pull/22)" in out
+    assert (
+        "Devin PRs (last 90d): 2 · draft=1, merged=1 · open with failing CI: 1" in out
+    )
+
+
+def test_render_without_pulls_keeps_section() -> None:
+    out = devin_report.render("o/r", [], "healthy", [], [], NOW)
+    assert "### Pull requests" in out
+    assert "Devin PRs (last 90d): 0 · none" in out
