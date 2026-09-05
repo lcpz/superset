@@ -17,6 +17,27 @@
  * under the License.
  */
 
+// Digits-only strings shorter than this are treated as calendar values
+// (YYYY / YYYYMMDD) rather than epoch milliseconds.
+const MIN_EPOCH_MS_DIGITS = 12;
+const YEAR_MONTH_DAY = /^(\d{4})(\d{2})(\d{2})$/;
+
+function parseDigitsOnlyString(trimmed: string): Date {
+  if (trimmed.startsWith('-') || trimmed.length >= MIN_EPOCH_MS_DIGITS) {
+    return new Date(Number(trimmed));
+  }
+  if (trimmed.length === 4) {
+    return new Date(Date.UTC(Number(trimmed), 0, 1));
+  }
+  const ymd = YEAR_MONTH_DAY.exec(trimmed);
+  if (ymd) {
+    return new Date(
+      Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])),
+    );
+  }
+  return new Date(trimmed);
+}
+
 export default function stringifyTimeInput(
   value: Date | number | string | undefined | null,
   fn: (time: Date) => string,
@@ -28,7 +49,9 @@ export default function stringifyTimeInput(
   if (typeof value === 'string') {
     const trimmed = value.trim();
     const isIntegerString = /^-?\d+$/.test(trimmed);
-    return fn(new Date(isIntegerString ? Number(trimmed) : value));
+    return fn(
+      isIntegerString ? parseDigitsOnlyString(trimmed) : new Date(value),
+    );
   }
 
   return fn(value instanceof Date ? value : new Date(value));
