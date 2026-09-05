@@ -32,8 +32,8 @@ if [ "$BUILD_SUPERSET_FRONTEND_IN_DOCKER" = "true" ]; then
         npm run prune
     fi
 
-    echo "Running \"npm install\""
-    npm install
+    echo "Running \"npm ci\""
+    npm ci
 
     echo "Start webpack dev server"
     # start the webpack dev server, serving dynamically at http://localhost:9000
