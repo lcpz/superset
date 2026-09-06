@@ -17,25 +17,32 @@
  * under the License.
  */
 
-// Digits-only strings shorter than this are treated as calendar values
-// (YYYY / YYYYMMDD) rather than epoch milliseconds.
-const MIN_EPOCH_MS_DIGITS = 12;
-const YEAR_MONTH_DAY = /^(\d{4})(\d{2})(\d{2})$/;
+function utcDate(year: number, month: number, day: number): Date {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month, day);
+  return date;
+}
 
+// Digits-only strings are epoch milliseconds, except for the two common
+// calendar-key shapes: YYYY and a valid YYYYMMDD.
 function parseDigitsOnlyString(trimmed: string): Date {
-  if (trimmed.startsWith('-') || trimmed.length >= MIN_EPOCH_MS_DIGITS) {
-    return new Date(Number(trimmed));
-  }
   if (trimmed.length === 4) {
-    return new Date(Date.UTC(Number(trimmed), 0, 1));
+    return utcDate(Number(trimmed), 0, 1);
   }
-  const ymd = YEAR_MONTH_DAY.exec(trimmed);
-  if (ymd) {
-    return new Date(
-      Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])),
-    );
+  if (trimmed.length === 8) {
+    const year = Number(trimmed.slice(0, 4));
+    const month = Number(trimmed.slice(4, 6)) - 1;
+    const day = Number(trimmed.slice(6, 8));
+    const date = utcDate(year, month, day);
+    if (
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month &&
+      date.getUTCDate() === day
+    ) {
+      return date;
+    }
   }
-  return new Date(trimmed);
+  return new Date(Number(trimmed));
 }
 
 export default function stringifyTimeInput(

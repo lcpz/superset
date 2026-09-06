@@ -46,6 +46,26 @@ test('stringifyTimeInput treats long digit strings as epoch milliseconds', () =>
   expect(getTimeFormatter('%Y')('1487071353000')).toEqual('2017');
 });
 
+test('stringifyTimeInput keeps short epoch strings as epoch milliseconds', () => {
+  expect(stringifyTimeInput('0', iso)).toEqual('1970-01-01T00:00:00.000Z');
+  expect(stringifyTimeInput('86400000', iso)).toEqual(
+    '1970-01-02T00:00:00.000Z',
+  );
+  expect(stringifyTimeInput('12345678901', iso)).toEqual(
+    '1970-05-23T21:21:18.901Z',
+  );
+});
+
+test('stringifyTimeInput does not normalize invalid or low-year calendar keys', () => {
+  expect(stringifyTimeInput('0001', iso)).toEqual('0001-01-01T00:00:00.000Z');
+  expect(stringifyTimeInput('20230229', iso)).toEqual(
+    '1970-01-01T05:37:10.229Z',
+  );
+  expect(stringifyTimeInput('20231301', iso)).toEqual(
+    '1970-01-01T05:37:11.301Z',
+  );
+});
+
 test('stringifyTimeInput still handles non-string and null inputs', () => {
   expect(stringifyTimeInput(1487071353000, iso)).toEqual(
     '2017-02-14T11:22:33.000Z',
