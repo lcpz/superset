@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 import logging
+from datetime import datetime
 from functools import partial
 from typing import Optional
 
@@ -51,6 +52,12 @@ class RefreshDatasetCommand(BaseCommand):
         assert self._model
         try:
             self._model.fetch_metadata()
+            # ``fetch_metadata`` mutates the child ``table_columns`` rows without
+            # dirtying the parent ``tables`` row, so the ``onupdate`` on
+            # ``changed_on`` does not fire. The chart data cache key derives from
+            # ``datasource.changed_on``, so it must be bumped explicitly, as
+            # ``DatasetDAO.update`` does for manual column/metric edits.
+            self._model.changed_on = datetime.now()
         except SupersetVirtualTableParseException as ex:
             # The virtual dataset's SQL could not be parsed or templated at
             # save time — typically Jinja blocks (e.g. ``{% if from_dttm %}``)

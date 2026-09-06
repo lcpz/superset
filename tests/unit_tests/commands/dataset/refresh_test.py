@@ -43,6 +43,7 @@ This module covers:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 import pytest
 from pytest_mock import MockerFixture
@@ -153,6 +154,55 @@ def test_refresh_still_raises_on_security_exception(
     # this one.
     with pytest.raises(SupersetSecurityException):
         RefreshDatasetCommand(model_id=1).run()
+
+
+def test_refresh_bumps_changed_on(mocker: MockerFixture) -> None:
+    """A successful refresh must bump ``changed_on`` so the chart data cache
+    key (which includes ``datasource.changed_on``) changes after a schema
+    change. ``fetch_metadata`` only dirties the child ``table_columns`` rows,
+    so the ``onupdate`` on the parent row never fires. See #43918."""
+    mock_dataset_dao = mocker.patch("superset.commands.dataset.refresh.DatasetDAO")
+    mock_model = mocker.MagicMock()
+    mock_model.table_name = "physical_dataset"
+    mock_model.changed_on = datetime(2020, 1, 1)
+    mock_dataset_dao.find_by_id.return_value = mock_model
+    mocker.patch(
+        "superset.commands.dataset.refresh.security_manager.raise_for_editorship"
+    )
+    mocker.patch(
+        "superset.commands.dataset.refresh.current_app.config.get",
+        return_value=False,
+    )
+
+    RefreshDatasetCommand(model_id=1).run()
+
+    assert mock_model.changed_on > datetime(2020, 1, 1)
+
+
+def test_refresh_does_not_bump_changed_on_when_parse_fails(
+    mocker: MockerFixture,
+) -> None:
+    """When metadata could not be refreshed, nothing changed, so the cache
+    key must stay stable."""
+    mock_dataset_dao = mocker.patch("superset.commands.dataset.refresh.DatasetDAO")
+    mock_model = mocker.MagicMock()
+    mock_model.table_name = "jinja_dataset"
+    mock_model.changed_on = datetime(2020, 1, 1)
+    mock_model.fetch_metadata.side_effect = SupersetVirtualTableParseException(
+        message="Invalid SQL: unexpected token"
+    )
+    mock_dataset_dao.find_by_id.return_value = mock_model
+    mocker.patch(
+        "superset.commands.dataset.refresh.security_manager.raise_for_editorship"
+    )
+    mocker.patch(
+        "superset.commands.dataset.refresh.current_app.config.get",
+        return_value=False,
+    )
+
+    RefreshDatasetCommand(model_id=1).run()
+
+    assert mock_model.changed_on == datetime(2020, 1, 1)
 
 
 def test_refresh_dataset_not_found(mocker: MockerFixture) -> None:
